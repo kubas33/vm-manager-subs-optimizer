@@ -180,6 +180,8 @@ final class SubstitutionPlanGenerator
         $slotTemplates = array_values($group);
         $startingLineups = $this->orderedSelections($candidates, $requiredSlots);
         $variants = [];
+        $seenSignatures = [];
+        $uniqueVariants = [];
 
         foreach ($startingLineups as $startingPlayers) {
             $perSetOptions = $this->generateSetAssignments($startingPlayers, $candidates);
@@ -218,7 +220,18 @@ final class SubstitutionPlanGenerator
             }
         }
 
-        return $variants;
+        foreach ($variants as $variant) {
+            $signature = $this->buildVariantSignature($variant);
+
+            if (isset($seenSignatures[$signature])) {
+                continue;
+            }
+
+            $seenSignatures[$signature] = true;
+            $uniqueVariants[] = $variant;
+        }
+
+        return $uniqueVariants;
     }
 
     /**
@@ -484,17 +497,35 @@ final class SubstitutionPlanGenerator
      */
     protected function buildVariantSignature(array $variant): string
     {
-        return (string) json_encode(array_map(
-            fn (array $slot): array => [
-                'slot_number' => $slot['slot_number'],
-                'starter' => $slot['starter']['id'],
-                'active_players' => array_map(
-                    fn (array $set): int => $set['active_player']['id'],
-                    $slot['sets'],
-                ),
-            ],
-            $variant['slots'],
-        ));
+        $normalizedSlots = collect($variant['slots'])
+            ->groupBy('position')
+            ->map(function ($slots, string $position): array {
+                $slotCount = count($slots);
+                $firstSlot = $slots[0] ?? null;
+                $setCount = is_array($firstSlot) ? count($firstSlot['sets'] ?? []) : 0;
+                $setSignatures = [];
+
+                for ($setIndex = 0; $setIndex < $setCount; $setIndex++) {
+                    $activePlayerIds = collect($slots)
+                        ->map(fn (array $slot): int => $slot['sets'][$setIndex]['active_player']['id'])
+                        ->sort()
+                        ->values()
+                        ->all();
+
+                    $setSignatures[] = $activePlayerIds;
+                }
+
+                return [
+                    'position' => $position,
+                    'slot_count' => $slotCount,
+                    'sets' => $setSignatures,
+                ];
+            })
+            ->sortBy('position')
+            ->values()
+            ->all();
+
+        return (string) json_encode($normalizedSlots);
     }
 
     /**

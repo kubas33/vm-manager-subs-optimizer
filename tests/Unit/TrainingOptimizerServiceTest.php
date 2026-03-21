@@ -155,6 +155,7 @@ test('training optimizer service maximizes total gained training across shared c
 test('training optimizer service rotates reserves when shared pool is large', function () {
     $scenario = MatchScenario::fromInput('25:20, 25:18, 25:22', 'Standardowe 3:0');
 
+    $generator = new SubstitutionPlanGenerator;
     $middleA = Player::factory()->make(['id' => 60, 'name' => 'Middle A', 'position' => PlayerPosition::MiddleBlocker, 'training_bar' => 0]);
     $middleB = Player::factory()->make(['id' => 61, 'name' => 'Middle B', 'position' => PlayerPosition::MiddleBlocker, 'training_bar' => 3]);
     $middleC = Player::factory()->make(['id' => 62, 'name' => 'Middle C', 'position' => PlayerPosition::MiddleBlocker, 'training_bar' => 14]);
@@ -165,11 +166,20 @@ test('training optimizer service rotates reserves when shared pool is large', fu
 
     $rankedPlans = (new TrainingOptimizerService(
         new TrainingGainCalculator,
-        new SubstitutionPlanGenerator,
+        $generator,
     ))->optimize([
         ['slot_number' => 1, 'position' => PlayerPosition::MiddleBlocker, 'reserve_limit' => 5, 'players' => [$middleA, $middleB, $middleC, $middleD, $middleE, $middleF, $middleG]],
         ['slot_number' => 2, 'position' => PlayerPosition::MiddleBlocker, 'reserve_limit' => 5, 'players' => [$middleA, $middleB, $middleC, $middleD, $middleE, $middleF, $middleG]],
     ], $scenario, 5);
+
+    $signature = Closure::bind(
+        fn (array $variant): string => $this->buildVariantSignature($variant),
+        $generator,
+        SubstitutionPlanGenerator::class,
+    );
+
+    $variantSignatures = collect($rankedPlans)
+        ->map(fn (array $plan): string => $signature($plan['plan']));
 
     $lowestFinalTrainingBar = collect($rankedPlans[0]['player_results'])
         ->min('final_training_bar');
@@ -177,6 +187,7 @@ test('training optimizer service rotates reserves when shared pool is large', fu
     expect($rankedPlans[0]['total_gained_training'])->toBeGreaterThan(150)
         ->and($rankedPlans[0]['substitutions_count'])->toBeGreaterThan(0)
         ->and(count($rankedPlans))->toBeGreaterThan(1)
+        ->and($variantSignatures->unique()->count())->toBe($variantSignatures->count())
         ->and(count($rankedPlans[0]['player_results']))->toBe(7)
         ->and($lowestFinalTrainingBar)->toBeGreaterThan(40);
 });
