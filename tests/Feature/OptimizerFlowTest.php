@@ -171,6 +171,71 @@ test('optimizer result page maps shared reserve pool to both analyzed slots', fu
         ->and($slotDefinitions[1]['reserve_limit'])->toBe(5);
 });
 
+test('optimizer result page aggregates multiple scenarios in ranking output', function () {
+    $this->actingAs(User::factory()->create());
+
+    Player::factory()->create([
+        'name' => 'Middle Alpha',
+        'position' => PlayerPosition::MiddleBlocker,
+        'training_bar' => 0,
+    ]);
+    Player::factory()->create([
+        'name' => 'Middle Beta',
+        'position' => PlayerPosition::MiddleBlocker,
+        'training_bar' => 3,
+    ]);
+    Player::factory()->create([
+        'name' => 'Middle Gamma',
+        'position' => PlayerPosition::MiddleBlocker,
+        'training_bar' => 14,
+    ]);
+    Player::factory()->create([
+        'name' => 'Middle Delta',
+        'position' => PlayerPosition::MiddleBlocker,
+        'training_bar' => 38,
+    ]);
+
+    session()->put('optimizer.input', [
+        'positions' => [
+            [
+                'value' => PlayerPosition::MiddleBlocker->value,
+                'label' => PlayerPosition::MiddleBlocker->label(),
+                'active_players' => 4,
+            ],
+            [
+                'value' => PlayerPosition::MiddleBlocker->value,
+                'label' => PlayerPosition::MiddleBlocker->label(),
+                'active_players' => 4,
+            ],
+        ],
+        'scenario_mode' => 'multiple',
+        'scenario_mode_label' => 'Kilka scenariuszy ręcznych',
+        'scenario_source' => 'manual',
+        'scenario_source_label' => 'Scenariusze ręczne',
+        'fairness_threshold' => 20,
+        'reserve_pools' => [
+            [
+                'position' => PlayerPosition::MiddleBlocker->value,
+                'position_label' => PlayerPosition::MiddleBlocker->label(),
+                'slot_count' => 2,
+                'reserve_limit' => 2,
+                'candidate_limit' => 4,
+            ],
+        ],
+        'scenarios' => [
+            MatchScenario::fromInput('25:20, 25:18, 25:22', 'Scenariusz 1')->toArray(),
+            MatchScenario::fromInput('25:21, 22:25, 25:20, 25:19', 'Scenariusz 2')->toArray(),
+        ],
+    ]);
+
+    $this->get(route('optimizer.result'))
+        ->assertOk()
+        ->assertSee('Agregacja scenariuszy: 2')
+        ->assertSee('Scenariusz referencyjny: Scenariusz 2')
+        ->assertSee('Ranking jest agregowany po wszystkich scenariuszach')
+        ->assertSee('Scenariusze: 2');
+});
+
 test('optimizer form validates reserve pool sum for different positions', function () {
     $this->actingAs(User::factory()->create());
 

@@ -216,3 +216,100 @@ test('training optimizer service prefers plans with fewer players below fairness
 
     expect($comparator($leftPlan, $rightPlan))->toBeGreaterThan(0);
 });
+
+test('training optimizer service aggregates scenario evaluations across multiple scenarios', function () {
+    $service = new TrainingOptimizerService(
+        new TrainingGainCalculator,
+        new SubstitutionPlanGenerator,
+    );
+
+    $aggregate = Closure::bind(
+        fn (array $evaluations): array => $this->aggregateScenarioEvaluations($evaluations),
+        $service,
+        TrainingOptimizerService::class,
+    );
+
+    $firstEvaluation = [
+        'total_gained_training' => 100,
+        'final_training_bar_sum' => 72,
+        'players_below_fairness_threshold' => 1,
+        'lowest_final_training_bar' => 12,
+        'wasted_actions' => 18,
+        'substitutions_count' => 2,
+        'fairness_threshold' => 20,
+        'player_results' => [
+            [
+                'id' => 1,
+                'name' => 'Ervin Rapčan',
+                'position' => PlayerPosition::MiddleBlocker->value,
+                'position_label' => PlayerPosition::MiddleBlocker->label(),
+                'training_bar' => 0,
+                'starting_training_bar' => 0,
+                'played_actions' => 40,
+                'gained_training' => 40,
+                'final_training_bar' => 12,
+                'wasted_actions' => 0,
+            ],
+            [
+                'id' => 2,
+                'name' => 'Kacper Kwiatek',
+                'position' => PlayerPosition::MiddleBlocker->value,
+                'position_label' => PlayerPosition::MiddleBlocker->label(),
+                'training_bar' => 3,
+                'starting_training_bar' => 3,
+                'played_actions' => 20,
+                'gained_training' => 20,
+                'final_training_bar' => 60,
+                'wasted_actions' => 0,
+            ],
+        ],
+        'plan' => ['slots' => []],
+    ];
+
+    $secondEvaluation = [
+        'total_gained_training' => 120,
+        'final_training_bar_sum' => 100,
+        'players_below_fairness_threshold' => 1,
+        'lowest_final_training_bar' => 18,
+        'wasted_actions' => 12,
+        'substitutions_count' => 3,
+        'fairness_threshold' => 20,
+        'player_results' => [
+            [
+                'id' => 1,
+                'name' => 'Ervin Rapčan',
+                'position' => PlayerPosition::MiddleBlocker->value,
+                'position_label' => PlayerPosition::MiddleBlocker->label(),
+                'training_bar' => 0,
+                'starting_training_bar' => 0,
+                'played_actions' => 50,
+                'gained_training' => 50,
+                'final_training_bar' => 28,
+                'wasted_actions' => 0,
+            ],
+            [
+                'id' => 2,
+                'name' => 'Kacper Kwiatek',
+                'position' => PlayerPosition::MiddleBlocker->value,
+                'position_label' => PlayerPosition::MiddleBlocker->label(),
+                'training_bar' => 3,
+                'starting_training_bar' => 3,
+                'played_actions' => 30,
+                'gained_training' => 30,
+                'final_training_bar' => 50,
+                'wasted_actions' => 0,
+            ],
+        ],
+        'plan' => ['slots' => []],
+    ];
+
+    $aggregated = $aggregate([$firstEvaluation, $secondEvaluation]);
+
+    expect($aggregated['scenario_count'])->toBe(2)
+        ->and($aggregated['total_gained_training'])->toBe(220)
+        ->and($aggregated['players_below_fairness_threshold'])->toBe(2)
+        ->and($aggregated['lowest_final_training_bar'])->toBe(12)
+        ->and($aggregated['wasted_actions'])->toBe(30)
+        ->and($aggregated['substitutions_count'])->toBe(5)
+        ->and(collect($aggregated['player_results'])->pluck('final_training_bar')->all())->toBe([20, 55]);
+});
