@@ -330,12 +330,17 @@ new #[Title('Wynik optymalizacji')] class extends Component
                 <div>
                     <flux:heading size="lg">Top warianty</flux:heading>
                     <flux:text class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
-                            Ranking jest agregowany po wszystkich scenariuszach z formularza. Najpierw liczy się suma przyrostu, potem liczba zawodników poniżej progu {{ $this->fairnessThreshold }}%, a potem bardziej wyrównany rozkład pasków. Plan bazowy do generowania wariantów bierzemy ze scenariusza referencyjnego o największej liczbie setów.
+                        Ranking jest agregowany po wszystkich scenariuszach z formularza. Najpierw liczy się suma przyrostu, potem liczba zawodników poniżej progu {{ $this->fairnessThreshold }}%, a potem bardziej wyrównany rozkład pasków. Plan bazowy do generowania wariantów bierzemy ze scenariusza referencyjnego o największej liczbie setów.
                     </flux:text>
                 </div>
+                <div class="flex gap-2">
                     @if ($this->rankingScenario !== null)
                         <flux:badge color="sky">{{ $this->rankingScenario->setsCount() }} sety</flux:badge>
                     @endif
+                    @if ($this->hasRankedPlans)
+                        <flux:badge color="emerald">{{ count($this->rankedPlans) }} wariantów</flux:badge>
+                    @endif
+                </div>
                 </div>
 
                 @if (! $this->hasRankedPlans)

@@ -176,6 +176,7 @@ test('training optimizer service rotates reserves when shared pool is large', fu
 
     expect($rankedPlans[0]['total_gained_training'])->toBeGreaterThan(150)
         ->and($rankedPlans[0]['substitutions_count'])->toBeGreaterThan(0)
+        ->and(count($rankedPlans))->toBeGreaterThan(1)
         ->and(count($rankedPlans[0]['player_results']))->toBe(7)
         ->and($lowestFinalTrainingBar)->toBeGreaterThan(40);
 });

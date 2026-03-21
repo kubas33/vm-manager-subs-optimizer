@@ -171,6 +171,83 @@ test('optimizer result page maps shared reserve pool to both analyzed slots', fu
         ->and($slotDefinitions[1]['reserve_limit'])->toBe(5);
 });
 
+test('optimizer result page shows multiple variants for a large shared middle blocker pool', function () {
+    $this->actingAs(User::factory()->create());
+
+    Player::factory()->create([
+        'name' => 'Middle A',
+        'position' => PlayerPosition::MiddleBlocker,
+        'training_bar' => 0,
+    ]);
+    Player::factory()->create([
+        'name' => 'Middle B',
+        'position' => PlayerPosition::MiddleBlocker,
+        'training_bar' => 3,
+    ]);
+    Player::factory()->create([
+        'name' => 'Middle C',
+        'position' => PlayerPosition::MiddleBlocker,
+        'training_bar' => 14,
+    ]);
+    Player::factory()->create([
+        'name' => 'Middle D',
+        'position' => PlayerPosition::MiddleBlocker,
+        'training_bar' => 38,
+    ]);
+    Player::factory()->create([
+        'name' => 'Middle E',
+        'position' => PlayerPosition::MiddleBlocker,
+        'training_bar' => 46,
+    ]);
+    Player::factory()->create([
+        'name' => 'Middle F',
+        'position' => PlayerPosition::MiddleBlocker,
+        'training_bar' => 52,
+    ]);
+    Player::factory()->create([
+        'name' => 'Middle G',
+        'position' => PlayerPosition::MiddleBlocker,
+        'training_bar' => 53,
+    ]);
+
+    session()->put('optimizer.input', [
+        'positions' => [
+            [
+                'value' => PlayerPosition::MiddleBlocker->value,
+                'label' => PlayerPosition::MiddleBlocker->label(),
+                'active_players' => 7,
+            ],
+            [
+                'value' => PlayerPosition::MiddleBlocker->value,
+                'label' => PlayerPosition::MiddleBlocker->label(),
+                'active_players' => 7,
+            ],
+        ],
+        'scenario_mode' => 'preset',
+        'scenario_mode_label' => 'Preset',
+        'scenario_source' => 'standard_3_0',
+        'scenario_source_label' => 'Standardowe 3:0',
+        'fairness_threshold' => 20,
+        'reserve_pools' => [
+            [
+                'position' => PlayerPosition::MiddleBlocker->value,
+                'position_label' => PlayerPosition::MiddleBlocker->label(),
+                'slot_count' => 2,
+                'reserve_limit' => 5,
+                'candidate_limit' => 7,
+            ],
+        ],
+        'scenarios' => [
+            MatchScenario::fromInput('25:20, 25:18, 25:22', 'Standardowe 3:0')->toArray(),
+        ],
+    ]);
+
+    $this->get(route('optimizer.result'))
+        ->assertOk()
+        ->assertSee('Wariant 2')
+        ->assertSee('wariantów');
+});
+
 test('optimizer result page aggregates multiple scenarios in ranking output', function () {
     $this->actingAs(User::factory()->create());
 

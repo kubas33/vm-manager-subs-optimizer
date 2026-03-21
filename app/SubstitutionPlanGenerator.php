@@ -126,7 +126,7 @@ final class SubstitutionPlanGenerator
             ->all();
 
         $groupVariants = array_map(
-            fn (array $group): array => $this->generateGreedyPositionGroupVariant($group, $scenario),
+            fn (array $group): array => $this->generateGreedyPositionGroupVariants($group, $scenario),
             $positionGroups,
         );
 
@@ -134,17 +134,17 @@ final class SubstitutionPlanGenerator
             return [];
         }
 
-        $slots = collect($groupVariants)
-            ->flatMap(fn (array $groupVariant): array => $groupVariant['slots'])
-            ->sortBy('slot_number')
-            ->values()
-            ->all();
+        return array_map(function (array $variantCombination): array {
+            $slots = collect($variantCombination)
+                ->flatMap(fn (array $groupVariant): array => $groupVariant['slots'])
+                ->sortBy('slot_number')
+                ->values()
+                ->all();
 
-        return [
-            [
+            return [
                 'slots' => $slots,
-            ],
-        ];
+            ];
+        }, $this->cartesianProduct($groupVariants));
     }
 
     /**
@@ -223,7 +223,7 @@ final class SubstitutionPlanGenerator
 
     /**
      * @param  array<int, array{slot_number: int, position: PlayerPosition, players: array<int, Player>}>  $group
-     * @return array{
+     * @return array<int, array{
      *     slots: array<int, array{
      *         slot_number: int,
      *         position: string,
@@ -238,9 +238,9 @@ final class SubstitutionPlanGenerator
      *             description: string
      *         }>
      *     }>
-     * }
+     * }>
      */
-    protected function generateGreedyPositionGroupVariant(array $group, MatchScenario $scenario): array
+    protected function generateGreedyPositionGroupVariants(array $group, MatchScenario $scenario): array
     {
         $requiredSlots = count($group);
         $candidates = $this->uniquePlayers(
@@ -265,8 +265,72 @@ final class SubstitutionPlanGenerator
             return $left->id <=> $right->id;
         });
 
+        $this->debugGenerator('optimizer.greedy.group.start', [
+            'position' => $group[0]['position']->value ?? null,
+            'slot_count' => $requiredSlots,
+            'candidate_count' => count($candidates),
+            'starter_pool_size' => min(count($candidates), $requiredSlots + 1),
+        ]);
+
+        $starterPool = array_slice($candidates, 0, min(count($candidates), $requiredSlots + 1));
+        $startingLineups = $this->orderedSelections($starterPool, $requiredSlots);
+        $variants = [];
+        $seenSignatures = [];
+
+        foreach ($startingLineups as $starters) {
+            $variant = $this->buildGreedyPositionGroupVariant($group, $scenario, $starters, $candidates);
+
+            if ($variant === []) {
+                continue;
+            }
+
+            $signature = $this->buildVariantSignature($variant);
+
+            if (isset($seenSignatures[$signature])) {
+                continue;
+            }
+
+            $seenSignatures[$signature] = true;
+            $variants[] = $variant;
+        }
+
+        $this->debugGenerator('optimizer.greedy.group.variants', [
+            'position' => $group[0]['position']->value ?? null,
+            'starter_lineups' => count($startingLineups),
+            'variant_count' => count($variants),
+        ]);
+
+        return $variants;
+    }
+
+    /**
+     * @param  array<int, array{slot_number: int, position: PlayerPosition, players: array<int, Player>}>  $group
+     * @param  array<int, Player>  $starters
+     * @param  array<int, Player>  $candidates
+     * @return array{
+     *     slots: array<int, array{
+     *         slot_number: int,
+     *         position: string,
+     *         position_label: string,
+     *         starter: array{id: int, name: string, position: string, training_bar: int},
+     *         sets: array<int, array{
+     *             set_number: int,
+     *             starter_player: array{id: int, name: string, position: string, training_bar: int},
+     *             active_player: array{id: int, name: string, position: string, training_bar: int},
+     *             substitution_player: array{id: int, name: string, position: string, training_bar: int}|null,
+     *             activation_point: int|null,
+     *             description: string
+     *         }>
+     *     }>
+     * }
+     */
+    protected function buildGreedyPositionGroupVariant(
+        array $group,
+        MatchScenario $scenario,
+        array $starters,
+        array $candidates,
+    ): array {
         $slotTemplates = array_values($group);
-        $starters = array_slice($candidates, 0, $requiredSlots);
         $starterIds = array_map(fn (Player $player): int => $player->id, $starters);
         $benchPlayers = array_values(array_filter(
             $candidates,
@@ -279,10 +343,8 @@ final class SubstitutionPlanGenerator
             $remainingCapacity[$candidate->id] = $candidate->maxTrainingGainPerMatch();
         }
 
-        $this->debugGenerator('optimizer.greedy.group.start', [
+        $this->debugGenerator('optimizer.greedy.group.variant.start', [
             'position' => $slotTemplates[0]['position']->value ?? null,
-            'slot_count' => $requiredSlots,
-            'candidate_count' => count($candidates),
             'starters' => array_map(
                 fn (Player $player): array => $this->playerSummary($player),
                 $starters,
@@ -400,6 +462,39 @@ final class SubstitutionPlanGenerator
         }
 
         Log::debug($message, $context);
+    }
+
+    /**
+     * @param  array{
+     *     slots: array<int, array{
+     *         slot_number: int,
+     *         position: string,
+     *         position_label: string,
+     *         starter: array{id: int, name: string, position: string, training_bar: int},
+     *         sets: array<int, array{
+     *             set_number: int,
+     *             starter_player: array{id: int, name: string, position: string, training_bar: int},
+     *             active_player: array{id: int, name: string, position: string, training_bar: int},
+     *             substitution_player: array{id: int, name: string, position: string, training_bar: int}|null,
+     *             activation_point: int|null,
+     *             description: string
+     *         }>
+     *     }>
+     * }  $variant
+     */
+    protected function buildVariantSignature(array $variant): string
+    {
+        return (string) json_encode(array_map(
+            fn (array $slot): array => [
+                'slot_number' => $slot['slot_number'],
+                'starter' => $slot['starter']['id'],
+                'active_players' => array_map(
+                    fn (array $set): int => $set['active_player']['id'],
+                    $slot['sets'],
+                ),
+            ],
+            $variant['slots'],
+        ));
     }
 
     /**
