@@ -52,15 +52,15 @@
 
 ## Etap 2. Szkielet aplikacji i routing
 
-- [ ] Przebudowac dashboard pod realny kontekst aplikacji.
+- [x] Przebudowac dashboard pod realny kontekst aplikacji.
   - Zakres: podsumowanie liczby aktywnych zawodnikow, szybkie linki i status gotowosci danych.
   - Done when: dashboard nie jest placeholderem starter-kita.
   - Zaleznosci: model `Player`.
-- [ ] Dodac trasy aplikacyjne MVP.
+- [x] Dodac trasy aplikacyjne MVP.
   - Zakres: `dashboard`, `players.index`, `optimizer.create`, `optimizer.result`.
   - Done when: kazdy ekran ma route name i dziala pod `Route::livewire()`.
   - Zaleznosci: Etap 0.
-- [ ] Zmienic nawigacje w sidebarze i branding.
+- [x] Zmienic nawigacje w sidebarze i branding.
   - Zakres: nazwa aplikacji, linki do ekranow MVP, usuniecie linkow starter-kita.
   - Done when: sidebar prowadzi po realnych ekranach projektu.
   - Zaleznosci: trasy aplikacyjne MVP.
@@ -175,6 +175,6 @@
 
 - [x] Dodac enum pozycji.
 - [x] Dodac migracje, model, factory i seed `Player`.
-- [-] Podmienic dashboard i sidebar na wersje projektowa.
+- [x] Podmienic dashboard i sidebar na wersje projektowa.
 - [ ] Dodac ekran `players.index` z lista i formularzem dodawania.
 - [ ] Dodac testy feature dla dashboardu i ekranu zawodnikow.
