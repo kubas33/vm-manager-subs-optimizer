@@ -259,7 +259,7 @@ new #[Title('Zawodnicy')] class extends Component
 
                     <div class="grid gap-4 md:grid-cols-[1.2fr_0.8fr_0.8fr]">
                         <flux:input wire:model.live.debounce.300ms="search" label="Szukaj" placeholder="Szukaj po nazwie" />
-                        <flux:select wire:model.live="filterPosition" label="Pozycja" placeholder="Wszystkie pozycje">
+                        <flux:select wire:model.live="filterPosition" label="Pozycja">
                             <option value="">Wszystkie pozycje</option>
                             @foreach ($this->positionOptions as $value => $label)
                                 <option value="{{ $value }}">{{ $label }}</option>

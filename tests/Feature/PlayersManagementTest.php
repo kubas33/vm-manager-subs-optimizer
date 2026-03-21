@@ -17,6 +17,16 @@ test('players page shows seeded players for authenticated users', function () {
         ->assertSee('Jan Testowy');
 });
 
+test('players page renders position filter option only once', function () {
+    $this->actingAs(User::factory()->create());
+
+    $response = $this->get(route('players.index'));
+
+    $response->assertOk();
+
+    expect(substr_count($response->getContent(), 'Wszystkie pozycje'))->toBe(1);
+});
+
 test('player can be created from players page', function () {
     $this->actingAs(User::factory()->create());
 
