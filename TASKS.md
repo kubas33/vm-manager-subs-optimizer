@@ -67,19 +67,19 @@
 
 ## Etap 3. UI zarzadzania zawodnikami
 
-- [ ] Dodac pelnostronicowy komponent Livewire dla listy zawodnikow.
+- [x] Dodac pelnostronicowy komponent Livewire dla listy zawodnikow.
   - Zakres: tabela lub lista, podstawowe statystyki, filtrowanie po pozycji i aktywnosci.
   - Done when: uzytkownik widzi wszystkich zawodnikow i moze ich filtrowac.
   - Zaleznosci: model `Player`.
-- [ ] Dodac formularz tworzenia zawodnika.
+- [x] Dodac formularz tworzenia zawodnika.
   - Zakres: imie i nazwisko, pozycja, pasek treningowy, aktywny.
   - Done when: nowy zawodnik zapisuje sie z walidacja i feedbackiem UI.
   - Zaleznosci: komponent listy zawodnikow.
-- [ ] Dodac edycje zawodnika w miejscu lub w panelu bocznym.
+- [x] Dodac edycje zawodnika w miejscu lub w panelu bocznym.
   - Zakres: szybka zmiana nazwy, pozycji, paska i statusu aktywnosci.
   - Done when: da sie zaktualizowac zawodnika bez opuszczania ekranu.
   - Zaleznosci: formularz tworzenia zawodnika.
-- [ ] Dodac walidacje formularzy players.
+- [x] Dodac walidacje formularzy players.
   - Zakres: unikalnosc i format nazwy zgodnie z decyzja produktowa, pozycja z enum, zakres `training_bar`.
   - Done when: bledne dane nie trafiaja do bazy i sa pokazane w UI.
   - Zaleznosci: formularze players.
@@ -176,5 +176,5 @@
 - [x] Dodac enum pozycji.
 - [x] Dodac migracje, model, factory i seed `Player`.
 - [x] Podmienic dashboard i sidebar na wersje projektowa.
-- [ ] Dodac ekran `players.index` z lista i formularzem dodawania.
-- [ ] Dodac testy feature dla dashboardu i ekranu zawodnikow.
+- [x] Dodac ekran `players.index` z lista i formularzem dodawania.
+- [x] Dodac testy feature dla dashboardu i ekranu zawodnikow.
