@@ -1,11 +1,33 @@
 <?php
 
 use App\Enums\PlayerPosition;
+use App\Models\Player;
 use App\Models\User;
 use Livewire\Livewire;
 
 test('optimizer form stores normalized preset input and redirects to result page', function () {
     $this->actingAs(User::factory()->create());
+
+    Player::factory()->create([
+        'name' => 'Setter Alpha',
+        'position' => PlayerPosition::Setter,
+        'training_bar' => 0,
+    ]);
+    Player::factory()->create([
+        'name' => 'Setter Beta',
+        'position' => PlayerPosition::Setter,
+        'training_bar' => 0,
+    ]);
+    Player::factory()->create([
+        'name' => 'Middle Alpha',
+        'position' => PlayerPosition::MiddleBlocker,
+        'training_bar' => 0,
+    ]);
+    Player::factory()->create([
+        'name' => 'Middle Beta',
+        'position' => PlayerPosition::MiddleBlocker,
+        'training_bar' => 0,
+    ]);
 
     Livewire::test('pages::optimizer.create')
         ->set('primaryPosition', PlayerPosition::Setter->value)
@@ -27,7 +49,10 @@ test('optimizer form stores normalized preset input and redirects to result page
         ->assertSee('Środkowy')
         ->assertSee('Preset')
         ->assertSee('Standardowe 3:0')
-        ->assertSee('25:20, 25:18, 25:22');
+        ->assertSee('25:20, 25:18, 25:22')
+        ->assertSee('Top warianty')
+        ->assertSee('Setter Alpha')
+        ->assertSee('Middle Alpha');
 });
 
 test('optimizer form allows the same position in both analyzed slots', function () {
