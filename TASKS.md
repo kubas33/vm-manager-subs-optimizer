@@ -125,6 +125,14 @@
   - Zakres: ocena wariantow, scoring, sortowanie i ograniczenie do top N.
   - Done when: dla danego wejscia zwracany jest ranking wariantow z punktacja.
   - Zaleznosci: kalkulator i generator planow.
+- [ ] Dodac konfiguracje pelnej lawki rezerwowych dla analizowanego skladu.
+  - Zakres: uwzglednienie skladu meczowego jako 2 zawodnikow w pierwszym skladzie dla analizowanych slotow + do 5 rezerwowych lacznie, bez sztywnego limitu na pozycje.
+  - Done when: algorytm potrafi analizowac pelna lawke, takze w scenariuszu typu 2 srodkowych w pierwszym skladzie + 5 kolejnych srodkowych jako rezerwowi.
+  - Zaleznosci: `SubstitutionPlanGenerator`, `TrainingOptimizerService`.
+- [ ] Dodac scoring uwzgledniajacy pewnosc setow.
+  - Zakres: preferowanie planow, ktore maksymalizuja przyrost w pierwszych 3 setach jako czesci pewnej, a sety 4-5 traktuja jako bonus / mniejsza wage.
+  - Done when: dla scenariuszy 3:1 i 3:2 algorytm premiuje wczesniejsze wejscia zawodnikow, jesli zwieksza to pewny zysk z pierwszych 3 setow.
+  - Zaleznosci: `TrainingOptimizerService`.
 
 ## Etap 6. Prezentacja wyniku
 
@@ -163,6 +171,12 @@
 - [ ] Dodac historie uruchomien optymalizacji.
 - [ ] Dodac szybsza edycje paskow z listy zawodnikow.
 - [ ] Dopracowac heurystyki progow zmian i uproszczenie planu.
+- [ ] Dopracowac heurystyke dla meczow dluzszych niz 3 sety.
+  - Zakres: pierwsze 3 sety traktowac jako czesc gwarantowana, a 4 i 5 set jako czesc niepewna.
+  - Done when: plan zmian nie odklada kluczowych wejsc tylko na set 4-5, jesli ten sam zawodnik moglby pewniej zyskac pasek juz w 1-3 secie.
+- [ ] Dodac UI sterowania liczba rezerwowych branych do optymalizacji dla pozycji.
+  - Zakres: pole lub selektor przy formularzu optymalizacji, ktory okresla, ilu rezerwowych lacznie ma trafic do analizowanej lawki, bez narzucania limitu per pozycja.
+  - Done when: user moze zdecydowac, czy optymalizacja ma uwzgledniac pelna lawke 5 rezerwowych, czy waska pule kandydatow dla szybszych obliczen.
 
 ## Otwarte decyzje domenowe
 
@@ -170,6 +184,9 @@
 - [ ] Ustalic, czy dla wielu scenariuszy liczymy jeden wspolny plan, czy osobne optima.
 - [ ] Ustalic granularnosc przeszukiwania progow zmian.
 - [ ] Ustalic finalna liste obslugiwanych pozycji w MVP.
+- [ ] Ustalic, czy user ma recznie wybierac liczbe rezerwowych lacznie, czy algorytm ma zawsze zakladac pelna lawke 5 zawodnikow.
+- [ ] Ustalic, czy i kiedy algorytm moze technicznie zawezac pelna lawke do mniejszej puli kandydatow bez gubienia sensownych wariantow.
+- [ ] Ustalic, jaka waga ma byc przypisana setom 4-5 wzgledem pierwszych 3 setow w scenariuszach niepewnych.
 
 ## Najblizszy implementacyjny slice
 
