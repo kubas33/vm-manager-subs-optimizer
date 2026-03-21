@@ -56,19 +56,29 @@ new #[Title('Wynik optymalizacji')] class extends Component
     #[Computed]
     public function slotDefinitions(): array
     {
+        $positionValues = collect($this->optimizerInput['positions'] ?? [])
+            ->pluck('value')
+            ->unique()
+            ->values();
+
+        $playersByPosition = Player::query()
+            ->active()
+            ->whereIn('position', $positionValues->all())
+            ->orderBy('training_bar')
+            ->orderBy('name')
+            ->get()
+            ->groupBy(fn (Player $player): string => $player->position->value);
+
         return collect($this->optimizerInput['positions'] ?? [])
             ->values()
-            ->map(function (array $position, int $index): array {
+            ->map(function (array $position, int $index) use ($playersByPosition): array {
                 $positionEnum = PlayerPosition::from($position['value']);
 
                 return [
                     'slot_number' => $index + 1,
                     'position' => $positionEnum,
-                    'players' => Player::query()
-                        ->active()
-                        ->where('position', $positionEnum->value)
-                        ->orderBy('name')
-                        ->get()
+                    'players' => ($playersByPosition[$positionEnum->value] ?? collect())
+                        ->values()
                         ->all(),
                 ];
             })
@@ -225,7 +235,7 @@ new #[Title('Wynik optymalizacji')] class extends Component
                     <div>
                         <flux:heading size="lg">Top warianty</flux:heading>
                         <flux:text class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
-                            Ranking jest liczony dla pierwszego scenariusza z formularza. Agregacja wielu scenariuszy będzie następnym krokiem.
+                            Ranking jest liczony dla pierwszego scenariusza z formularza. Agregacja wielu scenariuszy będzie następnym krokiem, a w tej wersji bierzemy do 3 najlepszych kandydatów na każdą pozycję, żeby wynik liczył się szybko.
                         </flux:text>
                     </div>
                     @if ($this->previewScenario !== null)

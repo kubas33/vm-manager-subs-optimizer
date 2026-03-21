@@ -456,9 +456,6 @@ new #[Title('Optymalizacja')] class extends Component
                     <flux:button variant="primary" type="submit">
                         Przejdź do wyniku
                     </flux:button>
-                    <flux:button variant="ghost" :href="route('optimizer.result')" wire:navigate>
-                        Otwórz ekran wyniku
-                    </flux:button>
                 </div>
             </form>
         </div>

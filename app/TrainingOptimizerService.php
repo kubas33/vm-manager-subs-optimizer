@@ -7,6 +7,8 @@ use App\Models\Player;
 
 final class TrainingOptimizerService
 {
+    public const MAX_CANDIDATES_PER_POSITION = 3;
+
     public function __construct(
         public TrainingGainCalculator $trainingGainCalculator,
         public SubstitutionPlanGenerator $substitutionPlanGenerator,
@@ -50,7 +52,10 @@ final class TrainingOptimizerService
      */
     public function optimize(array $slotDefinitions, MatchScenario $scenario, int $limit = 10): array
     {
-        $plans = $this->substitutionPlanGenerator->generate($slotDefinitions, $scenario);
+        $plans = $this->substitutionPlanGenerator->generate(
+            $this->selectCandidatesForOptimization($slotDefinitions),
+            $scenario,
+        );
 
         $rankedPlans = array_map(
             fn (array $plan): array => $this->evaluatePlan($plan, $scenario),
@@ -70,6 +75,30 @@ final class TrainingOptimizerService
         });
 
         return array_slice($rankedPlans, 0, max(1, $limit));
+    }
+
+    /**
+     * @param  array<int, array{slot_number: int, position: PlayerPosition, players: array<int, Player>}>  $slotDefinitions
+     * @return array<int, array{slot_number: int, position: PlayerPosition, players: array<int, Player>}>
+     */
+    protected function selectCandidatesForOptimization(array $slotDefinitions): array
+    {
+        return array_map(function (array $slotDefinition): array {
+            $players = collect($slotDefinition['players'])
+                ->sortBy([
+                    fn (Player $player): int => -$player->maxTrainingGainPerMatch(),
+                    fn (Player $player): int => $player->training_bar,
+                    fn (Player $player): string => $player->name,
+                ])
+                ->take(self::MAX_CANDIDATES_PER_POSITION)
+                ->values()
+                ->all();
+
+            return [
+                ...$slotDefinition,
+                'players' => $players,
+            ];
+        }, $slotDefinitions);
     }
 
     /**

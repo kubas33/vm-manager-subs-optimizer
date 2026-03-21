@@ -69,3 +69,32 @@ test('training optimizer service respects ranking limit', function () {
 
     expect($rankedPlans)->toHaveCount(3);
 });
+
+test('training optimizer service limits candidate pool per position for performance', function () {
+    $scenario = MatchScenario::fromInput('25:20, 25:18, 25:22', 'Standardowe 3:0');
+
+    $setterA = Player::factory()->make(['id' => 30, 'name' => 'Setter A', 'position' => PlayerPosition::Setter, 'training_bar' => 0]);
+    $setterB = Player::factory()->make(['id' => 31, 'name' => 'Setter B', 'position' => PlayerPosition::Setter, 'training_bar' => 10]);
+    $setterC = Player::factory()->make(['id' => 32, 'name' => 'Setter C', 'position' => PlayerPosition::Setter, 'training_bar' => 20]);
+    $setterD = Player::factory()->make(['id' => 33, 'name' => 'Setter D', 'position' => PlayerPosition::Setter, 'training_bar' => 95]);
+    $oppositeA = Player::factory()->make(['id' => 34, 'name' => 'Opposite A', 'position' => PlayerPosition::Opposite, 'training_bar' => 0]);
+    $oppositeB = Player::factory()->make(['id' => 35, 'name' => 'Opposite B', 'position' => PlayerPosition::Opposite, 'training_bar' => 0]);
+
+    $rankedPlans = (new TrainingOptimizerService(
+        new TrainingGainCalculator,
+        new SubstitutionPlanGenerator,
+    ))->optimize([
+        ['slot_number' => 1, 'position' => PlayerPosition::Setter, 'players' => [$setterA, $setterB, $setterC, $setterD]],
+        ['slot_number' => 2, 'position' => PlayerPosition::Opposite, 'players' => [$oppositeA, $oppositeB]],
+    ], $scenario, 5);
+
+    $setterNames = collect($rankedPlans)
+        ->flatMap(fn (array $plan): array => $plan['player_results'])
+        ->where('position', PlayerPosition::Setter->value)
+        ->pluck('name')
+        ->unique()
+        ->values()
+        ->all();
+
+    expect($setterNames)->not->toContain('Setter D');
+});
