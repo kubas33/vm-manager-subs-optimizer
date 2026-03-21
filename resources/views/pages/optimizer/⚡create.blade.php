@@ -20,6 +20,7 @@ new #[Title('Optymalizacja')] class extends Component
     public string $singleScenario = '25:20, 25:18, 25:22';
     public string $multipleScenarios = "25:20, 25:18, 25:22\n25:22, 22:25, 25:21, 25:19";
     public string $sharedReserveLimit = '5';
+    public string $fairnessThreshold = '20';
     /** @var array<string, string> */
     public array $reserveLimitsByPosition = [];
 
@@ -200,6 +201,7 @@ new #[Title('Optymalizacja')] class extends Component
             'presetKey' => [Rule::requiredIf($this->scenarioMode === 'preset'), Rule::in(array_keys($this->presetOptions()))],
             'singleScenario' => [Rule::requiredIf($this->scenarioMode === 'single'), 'string'],
             'multipleScenarios' => [Rule::requiredIf($this->scenarioMode === 'multiple'), 'string'],
+            'fairnessThreshold' => ['required', 'integer', 'min:0', 'max:100'],
         ];
 
         if ($this->usesSharedReservePool()) {
@@ -231,6 +233,10 @@ new #[Title('Optymalizacja')] class extends Component
             'presetKey.in' => 'Wybrany preset nie istnieje.',
             'singleScenario.required' => 'Wpisz scenariusz meczu.',
             'multipleScenarios.required' => 'Wpisz co najmniej jeden scenariusz.',
+            'fairnessThreshold.required' => 'Podaj próg minimalnego paska.',
+            'fairnessThreshold.integer' => 'Próg minimalnego paska musi być liczbą całkowitą.',
+            'fairnessThreshold.min' => 'Próg minimalnego paska nie może być mniejszy niż 0.',
+            'fairnessThreshold.max' => 'Próg minimalnego paska nie może przekroczyć 100.',
             'sharedReserveLimit.required' => 'Podaj liczbę rezerwowych dla wspólnej puli.',
             'sharedReserveLimit.integer' => 'Liczba rezerwowych musi być liczbą całkowitą.',
             'sharedReserveLimit.min' => 'Liczba rezerwowych nie może być mniejsza niż 0.',
@@ -274,6 +280,7 @@ new #[Title('Optymalizacja')] class extends Component
      *     scenario_mode_label: string,
      *     scenario_source: string,
      *     scenario_source_label: string,
+     *     fairness_threshold: int,
      *     reserve_pools: array<int, array{position: string, position_label: string, slot_count: int, reserve_limit: int, candidate_limit: int}>,
      *     scenarios: array<int, array{label: string, input: string, sets: array<int, array{our_score: int, opponent_score: int, actions: int}>, sets_count: int, total_actions: int}>
      * }
@@ -294,6 +301,7 @@ new #[Title('Optymalizacja')] class extends Component
             'scenario_mode_label' => $this->scenarioModeLabel($validated['scenarioMode']),
             'scenario_source' => $scenarioSource,
             'scenario_source_label' => $scenarioSourceLabel,
+            'fairness_threshold' => (int) $validated['fairnessThreshold'],
             'reserve_pools' => $this->normalizeReservePools($validated),
             'scenarios' => $this->buildScenarioSet($validated)->toArray(),
         ];
@@ -430,6 +438,7 @@ new #[Title('Optymalizacja')] class extends Component
             'presetKey' => $this->presetKey,
             'singleScenario' => $this->singleScenario,
             'multipleScenarios' => $this->multipleScenarios,
+            'fairnessThreshold' => $this->fairnessThreshold,
             'sharedReserveLimit' => $this->sharedReserveLimit,
             'reserveLimitsByPosition' => $this->reserveLimitsByPosition,
         ];
@@ -607,6 +616,35 @@ new #[Title('Optymalizacja')] class extends Component
                             @enderror
                         @endforeach
                     @endif
+                </div>
+
+                <div class="space-y-4">
+                    <div>
+                        <flux:heading size="base">Priorytet rozkładu</flux:heading>
+                        <flux:text class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
+                            Po maksymalizacji sumy pasków silnik preferuje warianty z mniejszą liczbą zawodników poniżej tego progu.
+                        </flux:text>
+                    </div>
+
+                    <div class="grid gap-4 md:grid-cols-[minmax(0,220px)_1fr] md:items-start">
+                        <div>
+                            <flux:input
+                                wire:model.live="fairnessThreshold"
+                                type="number"
+                                min="0"
+                                max="100"
+                                label="Minimalny pasek końcowy"
+                                badge="%"
+                            />
+                            @error('fairnessThreshold')
+                                <flux:text class="mt-2 text-sm text-rose-600 dark:text-rose-400">{{ $message }}</flux:text>
+                            @enderror
+                        </div>
+
+                        <flux:text class="pt-2 text-sm text-zinc-600 dark:text-zinc-300">
+                            Zawodnicy, którzy kończą mecz poniżej tego progu, są traktowani jako nisko ustawieni w rankingu wariantów.
+                        </flux:text>
+                    </div>
                 </div>
 
                 @if ($scenarioMode === 'preset')

@@ -179,3 +179,40 @@ test('training optimizer service rotates reserves when shared pool is large', fu
         ->and(count($rankedPlans[0]['player_results']))->toBe(7)
         ->and($lowestFinalTrainingBar)->toBeGreaterThan(40);
 });
+
+test('training optimizer service prefers plans with fewer players below fairness threshold when total gain is tied', function () {
+    $service = new TrainingOptimizerService(
+        new TrainingGainCalculator,
+        new SubstitutionPlanGenerator,
+    );
+
+    $comparator = Closure::bind(
+        fn (array $left, array $right): int => $this->compareRankedPlans($left, $right),
+        $service,
+        TrainingOptimizerService::class,
+    );
+
+    $leftPlan = [
+        'total_gained_training' => 100,
+        'players_below_fairness_threshold' => 1,
+        'player_results' => [
+            ['final_training_bar' => 10],
+            ['final_training_bar' => 55],
+        ],
+        'wasted_actions' => 12,
+        'substitutions_count' => 3,
+    ];
+
+    $rightPlan = [
+        'total_gained_training' => 100,
+        'players_below_fairness_threshold' => 0,
+        'player_results' => [
+            ['final_training_bar' => 25],
+            ['final_training_bar' => 40],
+        ],
+        'wasted_actions' => 99,
+        'substitutions_count' => 8,
+    ];
+
+    expect($comparator($leftPlan, $rightPlan))->toBeGreaterThan(0);
+});

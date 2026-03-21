@@ -35,6 +35,7 @@ test('optimizer form stores normalized preset input and redirects to result page
         ->set('secondaryPosition', PlayerPosition::MiddleBlocker->value)
         ->set('reserveLimitsByPosition.'.PlayerPosition::Setter->value, '2')
         ->set('reserveLimitsByPosition.'.PlayerPosition::MiddleBlocker->value, '3')
+        ->set('fairnessThreshold', '20')
         ->set('scenarioMode', 'preset')
         ->set('presetKey', 'standard_3_0')
         ->call('submit')
@@ -44,6 +45,7 @@ test('optimizer form stores normalized preset input and redirects to result page
     expect(session('optimizer.input'))->toMatchArray([
         'scenario_mode' => 'preset',
         'scenario_source' => 'standard_3_0',
+        'fairness_threshold' => 20,
         'reserve_pools' => [
             [
                 'position' => PlayerPosition::Setter->value,
@@ -70,6 +72,7 @@ test('optimizer form stores normalized preset input and redirects to result page
         ->assertSee('Standardowe 3:0')
         ->assertSee('25:20, 25:18, 25:22')
         ->assertSee('Pule rezerwowych')
+        ->assertSee('Próg minimalnego paska: 20%')
         ->assertSee('Top warianty')
         ->assertSee('Setter Alpha')
         ->assertSee('Middle Alpha');
@@ -143,6 +146,7 @@ test('optimizer result page maps shared reserve pool to both analyzed slots', fu
         'scenario_mode_label' => 'Preset',
         'scenario_source' => 'standard_3_0',
         'scenario_source_label' => 'Standardowe 3:0',
+        'fairness_threshold' => 20,
         'reserve_pools' => [
             [
                 'position' => PlayerPosition::MiddleBlocker->value,

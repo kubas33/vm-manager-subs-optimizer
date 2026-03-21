@@ -18,6 +18,8 @@ final class TrainingOptimizerService
      * @return array<int, array{
      *     total_gained_training: int,
      *     final_training_bar_sum: int,
+     *     players_below_fairness_threshold: int,
+     *     lowest_final_training_bar: int,
      *     wasted_actions: int,
      *     substitutions_count: int,
      *     player_results: array<int, array{
@@ -50,14 +52,21 @@ final class TrainingOptimizerService
      *     }
      * }>
      */
-    public function optimize(array $slotDefinitions, MatchScenario $scenario, int $limit = 10): array
-    {
+    public function optimize(
+        array $slotDefinitions,
+        MatchScenario $scenario,
+        int $limit = 10,
+        int $fairnessThreshold = 20,
+    ): array {
+        $fairnessThreshold = max(0, min(100, $fairnessThreshold));
+
         $this->debugOptimizer('optimizer.start', [
             'scenario' => [
                 'label' => $scenario->label,
                 'sets_count' => $scenario->setsCount(),
                 'total_actions' => $scenario->totalActions(),
             ],
+            'fairness_threshold' => $fairnessThreshold,
             'slot_definitions' => $this->summarizeSlotDefinitions($slotDefinitions),
         ]);
 
@@ -79,35 +88,21 @@ final class TrainingOptimizerService
         ]);
 
         $rankedPlans = array_map(
-            fn (array $plan): array => $this->evaluatePlan($plan, $scenario, $selectedCandidates),
+            fn (array $plan): array => $this->evaluatePlan($plan, $scenario, $selectedCandidates, $fairnessThreshold),
             $plans,
         );
 
-        usort($rankedPlans, function (array $left, array $right): int {
-            if ($left['total_gained_training'] !== $right['total_gained_training']) {
-                return $right['total_gained_training'] <=> $left['total_gained_training'];
-            }
-
-            $fairnessComparison = $this->compareFinalTrainingBarProfiles($left['player_results'], $right['player_results']);
-
-            if ($fairnessComparison !== 0) {
-                return $fairnessComparison;
-            }
-
-            if ($left['wasted_actions'] !== $right['wasted_actions']) {
-                return $left['wasted_actions'] <=> $right['wasted_actions'];
-            }
-
-            return $left['substitutions_count'] <=> $right['substitutions_count'];
-        });
+        usort($rankedPlans, fn (array $left, array $right): int => $this->compareRankedPlans($left, $right));
 
         $this->debugOptimizer('optimizer.rank.summary', [
+            'fairness_threshold' => $fairnessThreshold,
             'top_plans' => array_map(
                 function (array $plan, int $index): array {
                     return [
                         'rank' => $index + 1,
                         'total_gained_training' => $plan['total_gained_training'],
                         'final_training_bar_sum' => $plan['final_training_bar_sum'],
+                        'players_below_fairness_threshold' => $plan['players_below_fairness_threshold'],
                         'lowest_final_training_bar' => collect($plan['player_results'])
                             ->min('final_training_bar'),
                         'wasted_actions' => $plan['wasted_actions'],
@@ -232,6 +227,8 @@ final class TrainingOptimizerService
      * @return array{
      *     total_gained_training: int,
      *     final_training_bar_sum: int,
+     *     players_below_fairness_threshold: int,
+     *     lowest_final_training_bar: int,
      *     wasted_actions: int,
      *     substitutions_count: int,
      *     player_results: array<int, array{
@@ -264,8 +261,12 @@ final class TrainingOptimizerService
      *     }
      * }
      */
-    protected function evaluatePlan(array $plan, MatchScenario $scenario, array $slotDefinitions): array
-    {
+    protected function evaluatePlan(
+        array $plan,
+        MatchScenario $scenario,
+        array $slotDefinitions,
+        int $fairnessThreshold,
+    ): array {
         $playedActionsByPlayer = [];
         $playerSummaries = collect($slotDefinitions)
             ->flatMap(fn (array $slotDefinition): array => $slotDefinition['players'])
@@ -324,9 +325,19 @@ final class TrainingOptimizerService
             ->values()
             ->all();
 
+        $playersBelowFairnessThreshold = collect($playerResults)
+            ->filter(fn (array $result): bool => $result['final_training_bar'] < $fairnessThreshold)
+            ->count();
+
+        $lowestFinalTrainingBar = collect($playerResults)
+            ->min('final_training_bar') ?? 0;
+
         return [
             'total_gained_training' => array_sum(array_column($playerResults, 'gained_training')),
             'final_training_bar_sum' => array_sum(array_column($playerResults, 'final_training_bar')),
+            'players_below_fairness_threshold' => $playersBelowFairnessThreshold,
+            'lowest_final_training_bar' => $lowestFinalTrainingBar,
+            'fairness_threshold' => $fairnessThreshold,
             'wasted_actions' => array_sum(array_column($playerResults, 'wasted_actions')),
             'substitutions_count' => $substitutionsCount,
             'player_results' => $playerResults,
@@ -409,5 +420,44 @@ final class TrainingOptimizerService
         }
 
         return 0;
+    }
+
+    /**
+     * @param  array{
+     *     total_gained_training: int,
+     *     players_below_fairness_threshold: int,
+     *     player_results: array<int, array{final_training_bar: int}>,
+     *     wasted_actions: int,
+     *     substitutions_count: int
+     * }  $left
+     * @param  array{
+     *     total_gained_training: int,
+     *     players_below_fairness_threshold: int,
+     *     player_results: array<int, array{final_training_bar: int}>,
+     *     wasted_actions: int,
+     *     substitutions_count: int
+     * }  $right
+     */
+    protected function compareRankedPlans(array $left, array $right): int
+    {
+        if ($left['total_gained_training'] !== $right['total_gained_training']) {
+            return $right['total_gained_training'] <=> $left['total_gained_training'];
+        }
+
+        if ($left['players_below_fairness_threshold'] !== $right['players_below_fairness_threshold']) {
+            return $left['players_below_fairness_threshold'] <=> $right['players_below_fairness_threshold'];
+        }
+
+        $fairnessComparison = $this->compareFinalTrainingBarProfiles($left['player_results'], $right['player_results']);
+
+        if ($fairnessComparison !== 0) {
+            return $fairnessComparison;
+        }
+
+        if ($left['wasted_actions'] !== $right['wasted_actions']) {
+            return $left['wasted_actions'] <=> $right['wasted_actions'];
+        }
+
+        return $left['substitutions_count'] <=> $right['substitutions_count'];
     }
 }

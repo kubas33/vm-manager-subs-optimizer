@@ -38,6 +38,12 @@ new #[Title('Wynik optymalizacji')] class extends Component
     }
 
     #[Computed]
+    public function fairnessThreshold(): int
+    {
+        return max(0, min(100, (int) ($this->optimizerInput['fairness_threshold'] ?? 20)));
+    }
+
+    #[Computed]
     public function previewScenario(): ?MatchScenario
     {
         $input = $this->optimizerInput['scenarios'][0]['input'] ?? null;
@@ -98,6 +104,8 @@ new #[Title('Wynik optymalizacji')] class extends Component
      * @return array<int, array{
      *     total_gained_training: int,
      *     final_training_bar_sum: int,
+     *     players_below_fairness_threshold: int,
+     *     lowest_final_training_bar: int,
      *     wasted_actions: int,
      *     substitutions_count: int,
      *     player_results: array<int, array{
@@ -140,7 +148,7 @@ new #[Title('Wynik optymalizacji')] class extends Component
         return (new TrainingOptimizerService(
             new TrainingGainCalculator(),
             new SubstitutionPlanGenerator(),
-        ))->optimize($this->slotDefinitions, $this->previewScenario, 5);
+        ))->optimize($this->slotDefinitions, $this->previewScenario, 5, $this->fairnessThreshold);
     }
 
     #[Computed]
@@ -197,6 +205,9 @@ new #[Title('Wynik optymalizacji')] class extends Component
                 <flux:text class="text-sm uppercase tracking-[0.2em] text-zinc-500 dark:text-zinc-400">Tryb wejścia</flux:text>
                 <div class="mt-3 text-2xl font-semibold text-zinc-950 dark:text-zinc-50">{{ $optimizerInput['scenario_mode_label'] }}</div>
                 <flux:text class="mt-3 text-sm text-zinc-600 dark:text-zinc-300">{{ $optimizerInput['scenario_source_label'] }}</flux:text>
+                <flux:text class="mt-3 text-sm text-zinc-600 dark:text-zinc-300">
+                    Próg minimalnego paska: {{ $this->fairnessThreshold }}%
+                </flux:text>
             </div>
 
             <div class="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
@@ -273,7 +284,7 @@ new #[Title('Wynik optymalizacji')] class extends Component
                     <div>
                         <flux:heading size="lg">Top warianty</flux:heading>
                         <flux:text class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
-                            Ranking jest liczony dla pierwszego scenariusza z formularza. Agregacja wielu scenariuszy będzie następnym krokiem, a w tej wersji bierzemy do 3 najlepszych kandydatów na każdą pozycję, żeby wynik liczył się szybko.
+                            Ranking jest liczony dla pierwszego scenariusza z formularza. Najpierw liczy się suma przyrostu, potem liczba zawodników poniżej progu {{ $this->fairnessThreshold }}%, a potem bardziej wyrównany rozkład pasków. Agregacja wielu scenariuszy będzie następnym krokiem, a w tej wersji bierzemy do 3 najlepszych kandydatów na każdą pozycję, żeby wynik liczył się szybko.
                         </flux:text>
                     </div>
                     @if ($this->previewScenario !== null)
@@ -300,6 +311,8 @@ new #[Title('Wynik optymalizacji')] class extends Component
                                         <flux:text class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
                                             Łączny przyrost: {{ $rankedPlan['total_gained_training'] }},
                                             Suma końcowych pasków: {{ $rankedPlan['final_training_bar_sum'] }},
+                                            poniżej progu: {{ $rankedPlan['players_below_fairness_threshold'] }},
+                                            najniższy pasek: {{ $rankedPlan['lowest_final_training_bar'] }}%,
                                             zmarnowane akcje: {{ $rankedPlan['wasted_actions'] }},
                                             liczba zmian: {{ $rankedPlan['substitutions_count'] }}
                                         </flux:text>
