@@ -4,11 +4,10 @@ namespace App;
 
 use App\Enums\PlayerPosition;
 use App\Models\Player;
+use Illuminate\Support\Facades\Log;
 
 final class TrainingOptimizerService
 {
-    public const MAX_CANDIDATES_PER_POSITION = 3;
-
     public function __construct(
         public TrainingGainCalculator $trainingGainCalculator,
         public SubstitutionPlanGenerator $substitutionPlanGenerator,
@@ -17,6 +16,7 @@ final class TrainingOptimizerService
     /**
      * @param  array<int, array{slot_number: int, position: PlayerPosition, players: array<int, Player>}>  $slotDefinitions
      * @return array<int, array{
+     *     total_gained_training: int,
      *     final_training_bar_sum: int,
      *     wasted_actions: int,
      *     substitutions_count: int,
@@ -52,19 +52,46 @@ final class TrainingOptimizerService
      */
     public function optimize(array $slotDefinitions, MatchScenario $scenario, int $limit = 10): array
     {
-        $plans = $this->substitutionPlanGenerator->generate(
-            $this->selectCandidatesForOptimization($slotDefinitions),
-            $scenario,
-        );
+        $this->debugOptimizer('optimizer.start', [
+            'scenario' => [
+                'label' => $scenario->label,
+                'sets_count' => $scenario->setsCount(),
+                'total_actions' => $scenario->totalActions(),
+            ],
+            'slot_definitions' => $this->summarizeSlotDefinitions($slotDefinitions),
+        ]);
+
+        $selectedCandidates = $this->selectCandidatesForOptimization($slotDefinitions);
+        $useGreedyPlanner = $this->shouldUseGreedyPlanner($selectedCandidates);
+
+        $this->debugOptimizer('optimizer.candidates.selected', [
+            'planner' => $useGreedyPlanner ? 'greedy' : 'exhaustive',
+            'selected_candidates' => $this->summarizeSlotDefinitions($selectedCandidates),
+        ]);
+
+        $plans = $useGreedyPlanner
+            ? $this->substitutionPlanGenerator->generateGreedy($selectedCandidates, $scenario)
+            : $this->substitutionPlanGenerator->generate($selectedCandidates, $scenario);
+
+        $this->debugOptimizer('optimizer.plans.generated', [
+            'planner' => $useGreedyPlanner ? 'greedy' : 'exhaustive',
+            'count' => count($plans),
+        ]);
 
         $rankedPlans = array_map(
-            fn (array $plan): array => $this->evaluatePlan($plan, $scenario),
+            fn (array $plan): array => $this->evaluatePlan($plan, $scenario, $selectedCandidates),
             $plans,
         );
 
         usort($rankedPlans, function (array $left, array $right): int {
-            if ($left['final_training_bar_sum'] !== $right['final_training_bar_sum']) {
-                return $right['final_training_bar_sum'] <=> $left['final_training_bar_sum'];
+            if ($left['total_gained_training'] !== $right['total_gained_training']) {
+                return $right['total_gained_training'] <=> $left['total_gained_training'];
+            }
+
+            $fairnessComparison = $this->compareFinalTrainingBarProfiles($left['player_results'], $right['player_results']);
+
+            if ($fairnessComparison !== 0) {
+                return $fairnessComparison;
             }
 
             if ($left['wasted_actions'] !== $right['wasted_actions']) {
@@ -74,31 +101,115 @@ final class TrainingOptimizerService
             return $left['substitutions_count'] <=> $right['substitutions_count'];
         });
 
+        $this->debugOptimizer('optimizer.rank.summary', [
+            'top_plans' => array_map(
+                function (array $plan, int $index): array {
+                    return [
+                        'rank' => $index + 1,
+                        'total_gained_training' => $plan['total_gained_training'],
+                        'final_training_bar_sum' => $plan['final_training_bar_sum'],
+                        'lowest_final_training_bar' => collect($plan['player_results'])
+                            ->min('final_training_bar'),
+                        'wasted_actions' => $plan['wasted_actions'],
+                        'substitutions_count' => $plan['substitutions_count'],
+                        'players_with_actions' => collect($plan['player_results'])
+                            ->where('played_actions', '>', 0)
+                            ->pluck('name')
+                            ->values()
+                            ->all(),
+                        'player_results' => collect($plan['player_results'])
+                            ->map(fn (array $result): array => [
+                                'name' => $result['name'],
+                                'played_actions' => $result['played_actions'],
+                                'gained_training' => $result['gained_training'],
+                                'wasted_actions' => $result['wasted_actions'],
+                            ])
+                            ->values()
+                            ->all(),
+                    ];
+                },
+                array_slice($rankedPlans, 0, 5),
+                array_keys(array_slice($rankedPlans, 0, 5)),
+            ),
+        ]);
+
+        if (($rankedPlans[0]['substitutions_count'] ?? 0) === 0) {
+            $this->debugOptimizer('optimizer.rank.best_has_no_substitutions', [
+                'reason' => 'best ranked plan kept starters on court for all sets',
+                'best_plan' => $rankedPlans[0] ?? null,
+            ]);
+        }
+
         return array_slice($rankedPlans, 0, max(1, $limit));
     }
 
     /**
-     * @param  array<int, array{slot_number: int, position: PlayerPosition, players: array<int, Player>}>  $slotDefinitions
+     * @param  array<int, array{slot_number: int, position: PlayerPosition, reserve_limit?: int, players: array<int, Player>}>  $slotDefinitions
      * @return array<int, array{slot_number: int, position: PlayerPosition, players: array<int, Player>}>
      */
     protected function selectCandidatesForOptimization(array $slotDefinitions): array
     {
-        return array_map(function (array $slotDefinition): array {
-            $players = collect($slotDefinition['players'])
-                ->sortBy([
-                    fn (Player $player): int => -$player->maxTrainingGainPerMatch(),
-                    fn (Player $player): int => $player->training_bar,
-                    fn (Player $player): string => $player->name,
-                ])
-                ->take(self::MAX_CANDIDATES_PER_POSITION)
-                ->values()
-                ->all();
+        return collect($slotDefinitions)
+            ->groupBy(fn (array $slotDefinition): string => $slotDefinition['position']->value)
+            ->flatMap(function ($group): array {
+                $groupSlots = $group->values()->all();
+                $slotCount = count($groupSlots);
+                $reserveLimit = (int) ($groupSlots[0]['reserve_limit'] ?? 0);
+                $candidateLimit = $slotCount + $reserveLimit;
 
-            return [
-                ...$slotDefinition,
-                'players' => $players,
-            ];
-        }, $slotDefinitions);
+                $players = collect($groupSlots)
+                    ->flatMap(fn (array $slotDefinition): array => $slotDefinition['players'])
+                    ->unique(fn (Player $player): int => $player->id)
+                    ->sort(function (Player $left, Player $right): int {
+                        if ($left->training_bar !== $right->training_bar) {
+                            return $left->training_bar <=> $right->training_bar;
+                        }
+
+                        $nameComparison = strcmp($left->name, $right->name);
+
+                        if ($nameComparison !== 0) {
+                            return $nameComparison;
+                        }
+
+                        return $left->id <=> $right->id;
+                    })
+                    ->take($candidateLimit)
+                    ->values()
+                    ->all();
+
+                $this->debugOptimizer('optimizer.candidates.group', [
+                    'position' => $groupSlots[0]['position']->value ?? null,
+                    'slot_count' => $slotCount,
+                    'reserve_limit' => $reserveLimit,
+                    'candidate_limit' => $candidateLimit,
+                    'selected_candidates' => collect($players)
+                        ->map(fn (Player $player): array => [
+                            'id' => $player->id,
+                            'name' => $player->name,
+                            'training_bar' => $player->training_bar,
+                        ])
+                        ->values()
+                        ->all(),
+                ]);
+
+                return array_map(fn (array $slotDefinition): array => [
+                    ...$slotDefinition,
+                    'players' => $players,
+                ], $groupSlots);
+            })
+            ->sortBy('slot_number')
+            ->values()
+            ->all();
+    }
+
+    /**
+     * @param  array<int, array{slot_number: int, position: PlayerPosition, players: array<int, Player>}>  $slotDefinitions
+     */
+    protected function shouldUseGreedyPlanner(array $slotDefinitions): bool
+    {
+        return collect($slotDefinitions)
+            ->groupBy(fn (array $slotDefinition): string => $slotDefinition['position']->value)
+            ->contains(fn ($group): bool => count($group->first()['players'] ?? []) > 5);
     }
 
     /**
@@ -119,6 +230,7 @@ final class TrainingOptimizerService
      *     }>
      * } $plan
      * @return array{
+     *     total_gained_training: int,
      *     final_training_bar_sum: int,
      *     wasted_actions: int,
      *     substitutions_count: int,
@@ -152,10 +264,14 @@ final class TrainingOptimizerService
      *     }
      * }
      */
-    protected function evaluatePlan(array $plan, MatchScenario $scenario): array
+    protected function evaluatePlan(array $plan, MatchScenario $scenario, array $slotDefinitions): array
     {
         $playedActionsByPlayer = [];
-        $playerSummaries = [];
+        $playerSummaries = collect($slotDefinitions)
+            ->flatMap(fn (array $slotDefinition): array => $slotDefinition['players'])
+            ->unique(fn (Player $player): int => $player->id)
+            ->mapWithKeys(fn (Player $player): array => [$player->id => $this->playerSummary($player)])
+            ->all();
         $substitutionsCount = 0;
 
         foreach ($plan['slots'] as $slot) {
@@ -209,11 +325,89 @@ final class TrainingOptimizerService
             ->all();
 
         return [
+            'total_gained_training' => array_sum(array_column($playerResults, 'gained_training')),
             'final_training_bar_sum' => array_sum(array_column($playerResults, 'final_training_bar')),
             'wasted_actions' => array_sum(array_column($playerResults, 'wasted_actions')),
             'substitutions_count' => $substitutionsCount,
             'player_results' => $playerResults,
             'plan' => $plan,
         ];
+    }
+
+    /**
+     * @return array{id: int, name: string, position: string, training_bar: int}
+     */
+    protected function playerSummary(Player $player): array
+    {
+        return [
+            'id' => $player->id,
+            'name' => $player->name,
+            'position' => $player->position->value,
+            'training_bar' => $player->training_bar,
+        ];
+    }
+
+    protected function summarizeSlotDefinitions(array $slotDefinitions): array
+    {
+        return collect($slotDefinitions)
+            ->map(function (array $slotDefinition): array {
+                return [
+                    'slot_number' => $slotDefinition['slot_number'],
+                    'position' => $slotDefinition['position']->value,
+                    'reserve_limit' => $slotDefinition['reserve_limit'] ?? null,
+                    'players_count' => count($slotDefinition['players']),
+                    'players' => collect($slotDefinition['players'])
+                        ->map(fn (Player $player): array => [
+                            'id' => $player->id,
+                            'name' => $player->name,
+                            'training_bar' => $player->training_bar,
+                        ])
+                        ->values()
+                        ->all(),
+                ];
+            })
+            ->values()
+            ->all();
+    }
+
+    protected function debugOptimizer(string $message, array $context = []): void
+    {
+        $application = app();
+
+        if (! $application->bound('config') || ! (bool) $application['config']->get('app.debug')) {
+            return;
+        }
+
+        Log::debug($message, $context);
+    }
+
+    /**
+     * @param  array<int, array{final_training_bar: int}>  $leftPlayerResults
+     * @param  array<int, array{final_training_bar: int}>  $rightPlayerResults
+     */
+    protected function compareFinalTrainingBarProfiles(array $leftPlayerResults, array $rightPlayerResults): int
+    {
+        $leftProfile = collect($leftPlayerResults)
+            ->pluck('final_training_bar')
+            ->sort()
+            ->values()
+            ->all();
+        $rightProfile = collect($rightPlayerResults)
+            ->pluck('final_training_bar')
+            ->sort()
+            ->values()
+            ->all();
+        $profileLength = max(count($leftProfile), count($rightProfile));
+
+        for ($index = 0; $index < $profileLength; $index++) {
+            $leftValue = $leftProfile[$index] ?? 0;
+            $rightValue = $rightProfile[$index] ?? 0;
+
+            if ($leftValue !== $rightValue) {
+                return $rightValue <=> $leftValue;
+            }
+        }
+
+        return 0;
     }
 }

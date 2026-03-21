@@ -6,6 +6,7 @@ use App\Models\Player;
 use App\ScenarioSet;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
+use Illuminate\Support\Facades\Validator;
 use Livewire\Attributes\Computed;
 use Livewire\Attributes\Title;
 use Livewire\Component;
@@ -18,11 +19,15 @@ new #[Title('Optymalizacja')] class extends Component
     public string $presetKey = 'standard_3_0';
     public string $singleScenario = '25:20, 25:18, 25:22';
     public string $multipleScenarios = "25:20, 25:18, 25:22\n25:22, 22:25, 25:21, 25:19";
+    public string $sharedReserveLimit = '5';
+    /** @var array<string, string> */
+    public array $reserveLimitsByPosition = [];
 
     public function mount(): void
     {
         $this->primaryPosition = PlayerPosition::Setter->value;
         $this->secondaryPosition = PlayerPosition::MiddleBlocker->value;
+        $this->syncReserveLimitState();
     }
 
     #[Computed]
@@ -152,9 +157,30 @@ new #[Title('Optymalizacja')] class extends Component
         $this->resetValidation();
     }
 
+    public function updatedPrimaryPosition(): void
+    {
+        $this->syncReserveLimitState();
+        $this->resetValidation();
+    }
+
+    public function updatedSecondaryPosition(): void
+    {
+        $this->syncReserveLimitState();
+        $this->resetValidation();
+    }
+
+    /**
+     * @return array<int, array{position: string, position_label: string, slot_count: int, reserve_limit: int, candidate_limit: int}>
+     */
+    #[Computed]
+    public function previewReservePools(): array
+    {
+        return $this->normalizeReservePools($this->validationData());
+    }
+
     public function submit(): void
     {
-        $validated = $this->validate($this->rules(), $this->messages());
+        $validated = $this->validateOptimizerInput();
         $payload = $this->normalizedPayload($validated);
 
         session()->put('optimizer.input', $payload);
@@ -167,7 +193,7 @@ new #[Title('Optymalizacja')] class extends Component
      */
     protected function rules(): array
     {
-        return [
+        $rules = [
             'primaryPosition' => ['required', Rule::enum(PlayerPosition::class)],
             'secondaryPosition' => ['required', Rule::enum(PlayerPosition::class)],
             'scenarioMode' => ['required', Rule::in(array_keys($this->scenarioModes()))],
@@ -175,6 +201,18 @@ new #[Title('Optymalizacja')] class extends Component
             'singleScenario' => [Rule::requiredIf($this->scenarioMode === 'single'), 'string'],
             'multipleScenarios' => [Rule::requiredIf($this->scenarioMode === 'multiple'), 'string'],
         ];
+
+        if ($this->usesSharedReservePool()) {
+            $rules['sharedReserveLimit'] = ['required', 'integer', 'min:0', 'max:5'];
+
+            return $rules;
+        }
+
+        foreach ($this->distinctSelectedPositions() as $position) {
+            $rules['reserveLimitsByPosition.'.$position] = ['required', 'integer', 'min:0', 'max:5'];
+        }
+
+        return $rules;
     }
 
     /**
@@ -193,7 +231,39 @@ new #[Title('Optymalizacja')] class extends Component
             'presetKey.in' => 'Wybrany preset nie istnieje.',
             'singleScenario.required' => 'Wpisz scenariusz meczu.',
             'multipleScenarios.required' => 'Wpisz co najmniej jeden scenariusz.',
+            'sharedReserveLimit.required' => 'Podaj liczbę rezerwowych dla wspólnej puli.',
+            'sharedReserveLimit.integer' => 'Liczba rezerwowych musi być liczbą całkowitą.',
+            'sharedReserveLimit.min' => 'Liczba rezerwowych nie może być mniejsza niż 0.',
+            'sharedReserveLimit.max' => 'Wspólna pula rezerwowych nie może przekroczyć 5.',
+            'reserveLimitsByPosition.*.required' => 'Podaj liczbę rezerwowych dla pozycji.',
+            'reserveLimitsByPosition.*.integer' => 'Liczba rezerwowych musi być liczbą całkowitą.',
+            'reserveLimitsByPosition.*.min' => 'Liczba rezerwowych nie może być mniejsza niż 0.',
+            'reserveLimitsByPosition.*.max' => 'Liczba rezerwowych dla jednej pozycji nie może przekroczyć 5.',
         ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    protected function validateOptimizerInput(): array
+    {
+        $validator = Validator::make($this->validationData(), $this->rules(), $this->messages());
+
+        if (! $this->usesSharedReservePool()) {
+            $validator->after(function ($validator): void {
+                $sum = collect($this->distinctSelectedPositions())
+                    ->sum(fn (string $position): int => (int) ($this->reserveLimitsByPosition[$position] ?? 0));
+
+                if ($sum > 5) {
+                    $validator->errors()->add(
+                        'reserveLimitsByPosition',
+                        'Suma rezerwowych dla dwóch różnych pozycji nie może przekroczyć 5.',
+                    );
+                }
+            });
+        }
+
+        return $validator->validate();
     }
 
     /**
@@ -204,6 +274,7 @@ new #[Title('Optymalizacja')] class extends Component
      *     scenario_mode_label: string,
      *     scenario_source: string,
      *     scenario_source_label: string,
+     *     reserve_pools: array<int, array{position: string, position_label: string, slot_count: int, reserve_limit: int, candidate_limit: int}>,
      *     scenarios: array<int, array{label: string, input: string, sets: array<int, array{our_score: int, opponent_score: int, actions: int}>, sets_count: int, total_actions: int}>
      * }
      */
@@ -223,6 +294,7 @@ new #[Title('Optymalizacja')] class extends Component
             'scenario_mode_label' => $this->scenarioModeLabel($validated['scenarioMode']),
             'scenario_source' => $scenarioSource,
             'scenario_source_label' => $scenarioSourceLabel,
+            'reserve_pools' => $this->normalizeReservePools($validated),
             'scenarios' => $this->buildScenarioSet($validated)->toArray(),
         ];
     }
@@ -246,6 +318,33 @@ new #[Title('Optymalizacja')] class extends Component
                 'label' => PlayerPosition::from($value)->label(),
                 'active_players' => (int) ($counts[$value] ?? 0),
             ])
+            ->all();
+    }
+
+    /**
+     * @param  array<string, mixed>  $validated
+     * @return array<int, array{position: string, position_label: string, slot_count: int, reserve_limit: int, candidate_limit: int}>
+     */
+    protected function normalizeReservePools(array $validated): array
+    {
+        $slotCounts = collect([$validated['primaryPosition'], $validated['secondaryPosition']])
+            ->countBy();
+
+        return $slotCounts
+            ->map(function (int $slotCount, string $position) use ($validated): array {
+                $reserveLimit = $this->usesSharedReservePool()
+                    ? (int) $validated['sharedReserveLimit']
+                    : (int) ($validated['reserveLimitsByPosition'][$position] ?? 0);
+
+                return [
+                    'position' => $position,
+                    'position_label' => PlayerPosition::from($position)->label(),
+                    'slot_count' => $slotCount,
+                    'reserve_limit' => $reserveLimit,
+                    'candidate_limit' => $slotCount + $reserveLimit,
+                ];
+            })
+            ->values()
             ->all();
     }
 
@@ -317,6 +416,60 @@ new #[Title('Optymalizacja')] class extends Component
     protected function throwScenarioValidation(string $field, string $message): never
     {
         throw ValidationException::withMessages([$field => $message]);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    protected function validationData(): array
+    {
+        return [
+            'primaryPosition' => $this->primaryPosition,
+            'secondaryPosition' => $this->secondaryPosition,
+            'scenarioMode' => $this->scenarioMode,
+            'presetKey' => $this->presetKey,
+            'singleScenario' => $this->singleScenario,
+            'multipleScenarios' => $this->multipleScenarios,
+            'sharedReserveLimit' => $this->sharedReserveLimit,
+            'reserveLimitsByPosition' => $this->reserveLimitsByPosition,
+        ];
+    }
+
+    public function usesSharedReservePool(): bool
+    {
+        return $this->primaryPosition !== '' && $this->primaryPosition === $this->secondaryPosition;
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    public function distinctSelectedPositions(): array
+    {
+        return collect([$this->primaryPosition, $this->secondaryPosition])
+            ->filter()
+            ->unique()
+            ->values()
+            ->all();
+    }
+
+    protected function syncReserveLimitState(): void
+    {
+        $distinctPositions = $this->distinctSelectedPositions();
+
+        if ($this->usesSharedReservePool()) {
+            $this->sharedReserveLimit = $this->sharedReserveLimit !== '' ? $this->sharedReserveLimit : '5';
+
+            return;
+        }
+
+        $existing = $this->reserveLimitsByPosition;
+        $synced = [];
+
+        foreach ($distinctPositions as $position) {
+            $synced[$position] = (string) ($existing[$position] ?? '2');
+        }
+
+        $this->reserveLimitsByPosition = $synced;
     }
 };
 ?>
@@ -397,6 +550,63 @@ new #[Title('Optymalizacja')] class extends Component
                     @error('scenarioMode')
                         <flux:text class="text-sm text-rose-600 dark:text-rose-400">{{ $message }}</flux:text>
                     @enderror
+                </div>
+
+                <div class="space-y-4">
+                    <div>
+                        <flux:heading size="base">Pula rezerwowych</flux:heading>
+                        <flux:text class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
+                            Dla dwóch takich samych pozycji ustawiasz jedną wspólną pulę. Dla dwóch różnych pozycji ustawiasz osobne limity, a ich suma nie może przekroczyć 5.
+                        </flux:text>
+                    </div>
+
+                    @if ($this->usesSharedReservePool())
+                        <div>
+                            <flux:input
+                                wire:model.live="sharedReserveLimit"
+                                type="number"
+                                min="0"
+                                max="5"
+                                label="Wspólna pula rezerwowych"
+                            />
+                            <flux:text class="mt-2 text-sm text-zinc-600 dark:text-zinc-300">
+                                Ten limit dotyczy obu slotów dla pozycji {{ PlayerPosition::from($primaryPosition)->label() }}.
+                            </flux:text>
+                            @error('sharedReserveLimit')
+                                <flux:text class="mt-2 text-sm text-rose-600 dark:text-rose-400">{{ $message }}</flux:text>
+                            @enderror
+                        </div>
+                    @else
+                        <div class="grid gap-4 md:grid-cols-2">
+                            @foreach ($this->distinctSelectedPositions() as $positionValue)
+                                <div wire:key="reserve-limit-{{ $positionValue }}">
+                                    <flux:input
+                                        wire:model.live="reserveLimitsByPosition.{{ $positionValue }}"
+                                        type="number"
+                                        min="0"
+                                        max="5"
+                                        :label="'Pula rezerwowych dla '.PlayerPosition::from($positionValue)->label()"
+                                    />
+                                </div>
+                            @endforeach
+                        </div>
+
+                        <flux:text class="text-sm text-zinc-600 dark:text-zinc-300">
+                            Suma obu pól nie może przekroczyć 5 rezerwowych.
+                        </flux:text>
+
+                        @error('reserveLimitsByPosition')
+                            <flux:text class="text-sm text-rose-600 dark:text-rose-400">{{ $message }}</flux:text>
+                        @enderror
+
+                        @foreach ($this->distinctSelectedPositions() as $positionValue)
+                            @error('reserveLimitsByPosition.'.$positionValue)
+                                <flux:text wire:key="reserve-limit-error-{{ $positionValue }}" class="text-sm text-rose-600 dark:text-rose-400">
+                                    {{ PlayerPosition::from($positionValue)->label() }}: {{ $message }}
+                                </flux:text>
+                            @enderror
+                        @endforeach
+                    @endif
                 </div>
 
                 @if ($scenarioMode === 'preset')
@@ -511,6 +721,26 @@ new #[Title('Optymalizacja')] class extends Component
                             @endforeach
                         </div>
                     @endif
+                </div>
+
+                <div class="rounded-2xl border border-zinc-200 bg-zinc-50/70 p-4 dark:border-zinc-700 dark:bg-zinc-800/60">
+                    <flux:text class="text-sm uppercase tracking-[0.2em] text-zinc-500 dark:text-zinc-400">Pule rezerwowych</flux:text>
+
+                    <div class="mt-4 space-y-3">
+                        @foreach ($this->previewReservePools as $reservePool)
+                            <div wire:key="reserve-pool-preview-{{ $reservePool['position'] }}" class="rounded-2xl border border-zinc-200 bg-white px-4 py-3 dark:border-zinc-700 dark:bg-zinc-900">
+                                <div class="flex items-center justify-between gap-3">
+                                    <div>
+                                        <flux:text class="font-medium text-zinc-950 dark:text-zinc-50">{{ $reservePool['position_label'] }}</flux:text>
+                                        <flux:text class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
+                                            Sloty startowe: {{ $reservePool['slot_count'] }}, rezerwowi: {{ $reservePool['reserve_limit'] }}
+                                        </flux:text>
+                                    </div>
+                                    <flux:badge color="sky">{{ $reservePool['candidate_limit'] }} kandydatów</flux:badge>
+                                </div>
+                            </div>
+                        @endforeach
+                    </div>
                 </div>
 
                 <flux:callout icon="clipboard-document-check" color="emerald">

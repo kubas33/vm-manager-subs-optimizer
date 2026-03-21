@@ -51,7 +51,7 @@ new #[Title('Wynik optymalizacji')] class extends Component
     }
 
     /**
-     * @return array<int, array{slot_number: int, position: PlayerPosition, players: array<int, Player>}>
+     * @return array<int, array{slot_number: int, position: PlayerPosition, reserve_limit: int, players: array<int, Player>}>
      */
     #[Computed]
     public function slotDefinitions(): array
@@ -60,6 +60,8 @@ new #[Title('Wynik optymalizacji')] class extends Component
             ->pluck('value')
             ->unique()
             ->values();
+        $reserveLimits = collect($this->optimizerInput['reserve_pools'] ?? [])
+            ->mapWithKeys(fn (array $pool): array => [$pool['position'] => (int) $pool['reserve_limit']]);
 
         $playersByPosition = Player::query()
             ->active()
@@ -71,12 +73,13 @@ new #[Title('Wynik optymalizacji')] class extends Component
 
         return collect($this->optimizerInput['positions'] ?? [])
             ->values()
-            ->map(function (array $position, int $index) use ($playersByPosition): array {
+            ->map(function (array $position, int $index) use ($playersByPosition, $reserveLimits): array {
                 $positionEnum = PlayerPosition::from($position['value']);
 
                 return [
                     'slot_number' => $index + 1,
                     'position' => $positionEnum,
+                    'reserve_limit' => (int) ($reserveLimits[$positionEnum->value] ?? 0),
                     'players' => ($playersByPosition[$positionEnum->value] ?? collect())
                         ->values()
                         ->all(),
@@ -93,6 +96,7 @@ new #[Title('Wynik optymalizacji')] class extends Component
 
     /**
      * @return array<int, array{
+     *     total_gained_training: int,
      *     final_training_bar_sum: int,
      *     wasted_actions: int,
      *     substitutions_count: int,
@@ -205,6 +209,40 @@ new #[Title('Wynik optymalizacji')] class extends Component
         <section class="rounded-3xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
             <div class="flex items-center justify-between gap-4">
                 <div>
+                    <flux:heading size="lg">Pule rezerwowych</flux:heading>
+                    <flux:text class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
+                        Ranking jest liczony tylko na zawodnikach mieszczących się w skonfigurowanej puli dla każdej pozycji.
+                    </flux:text>
+                </div>
+                <flux:badge color="sky">{{ count($optimizerInput['reserve_pools'] ?? []) }} pule</flux:badge>
+            </div>
+
+            <div class="mt-6 grid gap-4 md:grid-cols-2">
+                @foreach ($optimizerInput['reserve_pools'] ?? [] as $reservePool)
+                    <div wire:key="reserve-pool-{{ $reservePool['position'] }}" class="rounded-2xl border border-zinc-200 bg-zinc-50/70 p-4 dark:border-zinc-700 dark:bg-zinc-800/60">
+                        <flux:text class="font-medium text-zinc-950 dark:text-zinc-50">{{ $reservePool['position_label'] }}</flux:text>
+                        <div class="mt-3 grid gap-3 sm:grid-cols-3">
+                            <div>
+                                <flux:text class="text-xs uppercase tracking-[0.2em] text-zinc-500 dark:text-zinc-400">Sloty</flux:text>
+                                <flux:text class="mt-1 text-sm text-zinc-900 dark:text-zinc-100">{{ $reservePool['slot_count'] }}</flux:text>
+                            </div>
+                            <div>
+                                <flux:text class="text-xs uppercase tracking-[0.2em] text-zinc-500 dark:text-zinc-400">Rezerwowi</flux:text>
+                                <flux:text class="mt-1 text-sm text-zinc-900 dark:text-zinc-100">{{ $reservePool['reserve_limit'] }}</flux:text>
+                            </div>
+                            <div>
+                                <flux:text class="text-xs uppercase tracking-[0.2em] text-zinc-500 dark:text-zinc-400">Kandydaci</flux:text>
+                                <flux:text class="mt-1 text-sm text-zinc-900 dark:text-zinc-100">{{ $reservePool['candidate_limit'] }}</flux:text>
+                            </div>
+                        </div>
+                    </div>
+                @endforeach
+            </div>
+        </section>
+
+        <section class="rounded-3xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
+            <div class="flex items-center justify-between gap-4">
+                <div>
                     <flux:heading size="lg">Znormalizowane scenariusze</flux:heading>
                     <flux:text class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">To jest payload przygotowany pod przyszłe obliczenia i ranking wariantów.</flux:text>
                 </div>
@@ -260,6 +298,7 @@ new #[Title('Wynik optymalizacji')] class extends Component
                                     <div>
                                         <flux:text class="font-medium text-zinc-950 dark:text-zinc-50">Wariant {{ $index + 1 }}</flux:text>
                                         <flux:text class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
+                                            Łączny przyrost: {{ $rankedPlan['total_gained_training'] }},
                                             Suma końcowych pasków: {{ $rankedPlan['final_training_bar_sum'] }},
                                             zmarnowane akcje: {{ $rankedPlan['wasted_actions'] }},
                                             liczba zmian: {{ $rankedPlan['substitutions_count'] }}

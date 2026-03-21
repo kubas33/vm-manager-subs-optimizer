@@ -4,7 +4,7 @@ use Illuminate\Support\Facades\Route;
 
 Route::redirect('/', '/dashboard')->name('home');
 
-Route::middleware(['auth', 'verified'])->group(function () {
+Route::middleware(['app.auth', 'app.verified'])->group(function () {
     Route::livewire('dashboard', 'pages::dashboard')->name('dashboard');
     Route::livewire('players', 'pages::players.index')->name('players.index');
     Route::livewire('optimizer', 'pages::optimizer.create')->name('optimizer.create');

@@ -4,6 +4,8 @@ use App\Models\User;
 
 return [
 
+    'disable_auth' => env('APP_DISABLE_AUTH', false),
+
     /*
     |--------------------------------------------------------------------------
     | Authentication Defaults

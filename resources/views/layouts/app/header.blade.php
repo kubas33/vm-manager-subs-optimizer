@@ -23,7 +23,13 @@
 
             <flux:spacer />
 
-            <x-desktop-user-menu />
+            @auth
+                <x-desktop-user-menu />
+            @elseif (! config('auth.disable_auth'))
+                <flux:button :href="route('login')" variant="ghost" wire:navigate>
+                    Zaloguj się
+                </flux:button>
+            @endauth
         </flux:header>
 
         <!-- Mobile Menu -->
@@ -49,11 +55,13 @@
 
             <flux:spacer />
 
-            <flux:sidebar.nav>
-                <flux:sidebar.item icon="cog-6-tooth" :href="route('profile.edit')" :current="request()->routeIs('profile.edit', 'security.edit', 'appearance.edit')" wire:navigate>
-                    Ustawienia
-                </flux:sidebar.item>
-            </flux:sidebar.nav>
+            @auth
+                <flux:sidebar.nav>
+                    <flux:sidebar.item icon="cog-6-tooth" :href="route('profile.edit')" :current="request()->routeIs('profile.edit', 'security.edit', 'appearance.edit')" wire:navigate>
+                        Ustawienia
+                    </flux:sidebar.item>
+                </flux:sidebar.nav>
+            @endauth
         </flux:sidebar>
 
         {{ $slot }}

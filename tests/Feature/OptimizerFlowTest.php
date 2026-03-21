@@ -1,6 +1,7 @@
 <?php
 
 use App\Enums\PlayerPosition;
+use App\MatchScenario;
 use App\Models\Player;
 use App\Models\User;
 use Livewire\Livewire;
@@ -32,6 +33,8 @@ test('optimizer form stores normalized preset input and redirects to result page
     Livewire::test('pages::optimizer.create')
         ->set('primaryPosition', PlayerPosition::Setter->value)
         ->set('secondaryPosition', PlayerPosition::MiddleBlocker->value)
+        ->set('reserveLimitsByPosition.'.PlayerPosition::Setter->value, '2')
+        ->set('reserveLimitsByPosition.'.PlayerPosition::MiddleBlocker->value, '3')
         ->set('scenarioMode', 'preset')
         ->set('presetKey', 'standard_3_0')
         ->call('submit')
@@ -41,6 +44,22 @@ test('optimizer form stores normalized preset input and redirects to result page
     expect(session('optimizer.input'))->toMatchArray([
         'scenario_mode' => 'preset',
         'scenario_source' => 'standard_3_0',
+        'reserve_pools' => [
+            [
+                'position' => PlayerPosition::Setter->value,
+                'position_label' => PlayerPosition::Setter->label(),
+                'slot_count' => 1,
+                'reserve_limit' => 2,
+                'candidate_limit' => 3,
+            ],
+            [
+                'position' => PlayerPosition::MiddleBlocker->value,
+                'position_label' => PlayerPosition::MiddleBlocker->label(),
+                'slot_count' => 1,
+                'reserve_limit' => 3,
+                'candidate_limit' => 4,
+            ],
+        ],
     ]);
 
     $this->get(route('optimizer.result'))
@@ -50,6 +69,7 @@ test('optimizer form stores normalized preset input and redirects to result page
         ->assertSee('Preset')
         ->assertSee('Standardowe 3:0')
         ->assertSee('25:20, 25:18, 25:22')
+        ->assertSee('Pule rezerwowych')
         ->assertSee('Top warianty')
         ->assertSee('Setter Alpha')
         ->assertSee('Middle Alpha');
@@ -61,6 +81,7 @@ test('optimizer form allows the same position in both analyzed slots', function 
     Livewire::test('pages::optimizer.create')
         ->set('primaryPosition', PlayerPosition::MiddleBlocker->value)
         ->set('secondaryPosition', PlayerPosition::MiddleBlocker->value)
+        ->set('sharedReserveLimit', '5')
         ->call('submit')
         ->assertHasNoErrors()
         ->assertRedirect(route('optimizer.result'));
@@ -70,6 +91,92 @@ test('optimizer form allows the same position in both analyzed slots', function 
             PlayerPosition::MiddleBlocker->value,
             PlayerPosition::MiddleBlocker->value,
         ]);
+
+    expect(session('optimizer.input.reserve_pools'))->toBe([
+        [
+            'position' => PlayerPosition::MiddleBlocker->value,
+            'position_label' => PlayerPosition::MiddleBlocker->label(),
+            'slot_count' => 2,
+            'reserve_limit' => 5,
+            'candidate_limit' => 7,
+        ],
+    ]);
+});
+
+test('optimizer form shows separate reserve pool inputs for different positions', function () {
+    $this->actingAs(User::factory()->create());
+
+    $this->get(route('optimizer.create'))
+        ->assertOk()
+        ->assertSee('Pula rezerwowych dla Rozgrywający')
+        ->assertSee('Pula rezerwowych dla Środkowy')
+        ->assertDontSee('Wspólna pula rezerwowych');
+});
+
+test('optimizer form shows shared reserve pool input for identical positions', function () {
+    $this->actingAs(User::factory()->create());
+
+    Livewire::test('pages::optimizer.create')
+        ->set('primaryPosition', PlayerPosition::MiddleBlocker->value)
+        ->set('secondaryPosition', PlayerPosition::MiddleBlocker->value)
+        ->assertSee('Wspólna pula rezerwowych')
+        ->assertDontSee('Pula rezerwowych dla Środkowy');
+});
+
+test('optimizer result page maps shared reserve pool to both analyzed slots', function () {
+    $this->actingAs(User::factory()->create());
+
+    session()->put('optimizer.input', [
+        'positions' => [
+            [
+                'value' => PlayerPosition::MiddleBlocker->value,
+                'label' => PlayerPosition::MiddleBlocker->label(),
+                'active_players' => 9,
+            ],
+            [
+                'value' => PlayerPosition::MiddleBlocker->value,
+                'label' => PlayerPosition::MiddleBlocker->label(),
+                'active_players' => 9,
+            ],
+        ],
+        'scenario_mode' => 'preset',
+        'scenario_mode_label' => 'Preset',
+        'scenario_source' => 'standard_3_0',
+        'scenario_source_label' => 'Standardowe 3:0',
+        'reserve_pools' => [
+            [
+                'position' => PlayerPosition::MiddleBlocker->value,
+                'position_label' => PlayerPosition::MiddleBlocker->label(),
+                'slot_count' => 2,
+                'reserve_limit' => 5,
+                'candidate_limit' => 7,
+            ],
+        ],
+        'scenarios' => [
+            MatchScenario::fromInput('25:20, 25:18, 25:22', 'Standardowe 3:0')->toArray(),
+        ],
+    ]);
+
+    $slotDefinitions = Livewire::test('pages::optimizer.result')
+        ->instance()
+        ->slotDefinitions();
+
+    expect($slotDefinitions)
+        ->toHaveCount(2)
+        ->and($slotDefinitions[0]['reserve_limit'])->toBe(5)
+        ->and($slotDefinitions[1]['reserve_limit'])->toBe(5);
+});
+
+test('optimizer form validates reserve pool sum for different positions', function () {
+    $this->actingAs(User::factory()->create());
+
+    Livewire::test('pages::optimizer.create')
+        ->set('primaryPosition', PlayerPosition::MiddleBlocker->value)
+        ->set('secondaryPosition', PlayerPosition::OutsideHitter->value)
+        ->set('reserveLimitsByPosition.'.PlayerPosition::MiddleBlocker->value, '3')
+        ->set('reserveLimitsByPosition.'.PlayerPosition::OutsideHitter->value, '3')
+        ->call('submit')
+        ->assertHasErrors(['reserveLimitsByPosition']);
 });
 
 test('optimizer form validates manual scenario format', function () {

@@ -4,6 +4,7 @@ namespace App;
 
 use App\Enums\PlayerPosition;
 use App\Models\Player;
+use Illuminate\Support\Facades\Log;
 use InvalidArgumentException;
 
 final class SubstitutionPlanGenerator
@@ -64,6 +65,86 @@ final class SubstitutionPlanGenerator
                 'slots' => $slots,
             ];
         }, $this->cartesianProduct($groupVariants));
+    }
+
+    /**
+     * @param  array<int, array{slot_number: int, position: PlayerPosition, players: array<int, Player>}>  $slotDefinitions
+     * @return array<int, array{
+     *     slots: array<int, array{
+     *         slot_number: int,
+     *         position: string,
+     *         position_label: string,
+     *         starter: array{id: int, name: string, position: string, training_bar: int},
+     *         sets: array<int, array{
+     *             set_number: int,
+     *             starter_player: array{id: int, name: string, position: string, training_bar: int},
+     *             active_player: array{id: int, name: string, position: string, training_bar: int},
+     *             substitution_player: array{id: int, name: string, position: string, training_bar: int}|null,
+     *             activation_point: int|null,
+     *             description: string
+     *         }>
+     *     }>
+     * }>
+     */
+    public function generateGreedy(array $slotDefinitions, MatchScenario $scenario): array
+    {
+        if (count($slotDefinitions) !== 2) {
+            throw new InvalidArgumentException('Generator oczekuje dokładnie dwóch analizowanych slotów.');
+        }
+
+        $this->debugGenerator('optimizer.greedy.start', [
+            'scenario' => [
+                'label' => $scenario->label,
+                'sets_count' => $scenario->setsCount(),
+                'total_actions' => $scenario->totalActions(),
+            ],
+            'slot_definitions' => collect($slotDefinitions)
+                ->map(function (array $slotDefinition): array {
+                    return [
+                        'slot_number' => $slotDefinition['slot_number'],
+                        'position' => $slotDefinition['position']->value,
+                        'players_count' => count($slotDefinition['players']),
+                        'players' => collect($slotDefinition['players'])
+                            ->map(fn (Player $player): array => $this->playerSummary($player))
+                            ->values()
+                            ->all(),
+                    ];
+                })
+                ->values()
+                ->all(),
+        ]);
+
+        $normalizedSlots = collect($slotDefinitions)
+            ->sortBy('slot_number')
+            ->values()
+            ->all();
+
+        $positionGroups = collect($normalizedSlots)
+            ->groupBy(fn (array $slot): string => $slot['position']->value)
+            ->map(fn ($group): array => $group->values()->all())
+            ->values()
+            ->all();
+
+        $groupVariants = array_map(
+            fn (array $group): array => $this->generateGreedyPositionGroupVariant($group, $scenario),
+            $positionGroups,
+        );
+
+        if (collect($groupVariants)->contains(fn (array $variants): bool => $variants === [])) {
+            return [];
+        }
+
+        $slots = collect($groupVariants)
+            ->flatMap(fn (array $groupVariant): array => $groupVariant['slots'])
+            ->sortBy('slot_number')
+            ->values()
+            ->all();
+
+        return [
+            [
+                'slots' => $slots,
+            ],
+        ];
     }
 
     /**
@@ -138,6 +219,187 @@ final class SubstitutionPlanGenerator
         }
 
         return $variants;
+    }
+
+    /**
+     * @param  array<int, array{slot_number: int, position: PlayerPosition, players: array<int, Player>}>  $group
+     * @return array{
+     *     slots: array<int, array{
+     *         slot_number: int,
+     *         position: string,
+     *         position_label: string,
+     *         starter: array{id: int, name: string, position: string, training_bar: int},
+     *         sets: array<int, array{
+     *             set_number: int,
+     *             starter_player: array{id: int, name: string, position: string, training_bar: int},
+     *             active_player: array{id: int, name: string, position: string, training_bar: int},
+     *             substitution_player: array{id: int, name: string, position: string, training_bar: int}|null,
+     *             activation_point: int|null,
+     *             description: string
+     *         }>
+     *     }>
+     * }
+     */
+    protected function generateGreedyPositionGroupVariant(array $group, MatchScenario $scenario): array
+    {
+        $requiredSlots = count($group);
+        $candidates = $this->uniquePlayers(
+            collect($group)->flatMap(fn (array $slot): array => $slot['players'])->all(),
+        );
+
+        if (count($candidates) < $requiredSlots) {
+            return [];
+        }
+
+        usort($candidates, function (Player $left, Player $right): int {
+            if ($left->training_bar !== $right->training_bar) {
+                return $left->training_bar <=> $right->training_bar;
+            }
+
+            $nameComparison = strcmp($left->name, $right->name);
+
+            if ($nameComparison !== 0) {
+                return $nameComparison;
+            }
+
+            return $left->id <=> $right->id;
+        });
+
+        $slotTemplates = array_values($group);
+        $starters = array_slice($candidates, 0, $requiredSlots);
+        $starterIds = array_map(fn (Player $player): int => $player->id, $starters);
+        $benchPlayers = array_values(array_filter(
+            $candidates,
+            fn (Player $player): bool => ! in_array($player->id, $starterIds, true),
+        ));
+
+        $remainingCapacity = [];
+
+        foreach ($candidates as $candidate) {
+            $remainingCapacity[$candidate->id] = $candidate->maxTrainingGainPerMatch();
+        }
+
+        $this->debugGenerator('optimizer.greedy.group.start', [
+            'position' => $slotTemplates[0]['position']->value ?? null,
+            'slot_count' => $requiredSlots,
+            'candidate_count' => count($candidates),
+            'starters' => array_map(
+                fn (Player $player): array => $this->playerSummary($player),
+                $starters,
+            ),
+            'bench_players' => array_map(
+                fn (Player $player): array => $this->playerSummary($player),
+                $benchPlayers,
+            ),
+        ]);
+
+        $slots = array_map(
+            fn (array $slotTemplate, int $slotIndex): array => [
+                'slot_number' => $slotTemplate['slot_number'],
+                'position' => $slotTemplate['position']->value,
+                'position_label' => $slotTemplate['position']->label(),
+                'starter' => $this->playerSummary($starters[$slotIndex]),
+                'sets' => [],
+            ],
+            $slotTemplates,
+            array_keys($slotTemplates),
+        );
+
+        foreach ($scenario->sets as $setIndex => $scenarioSet) {
+            $setActions = $scenarioSet['actions'] ?? 0;
+            $usedBenchIds = [];
+
+            foreach ($slotTemplates as $slotIndex => $slotTemplate) {
+                $starter = $starters[$slotIndex];
+                $starterRemaining = $remainingCapacity[$starter->id] ?? 0;
+                $bestPlayer = $starter;
+                $bestGain = min($setActions, $starterRemaining);
+                $benchOptions = [];
+
+                foreach ($benchPlayers as $benchPlayer) {
+                    $benchRemainingBefore = $remainingCapacity[$benchPlayer->id] ?? 0;
+                    $starterGainIfSub = min(1, $starterRemaining);
+                    $benchGain = min(max(0, $setActions - 1), $benchRemainingBefore);
+                    $totalGain = $starterGainIfSub + $benchGain;
+
+                    $benchOptions[] = [
+                        'player' => $this->playerSummary($benchPlayer),
+                        'used_this_set' => in_array($benchPlayer->id, $usedBenchIds, true),
+                        'remaining_capacity_before' => $benchRemainingBefore,
+                        'starter_gain_if_sub' => $starterGainIfSub,
+                        'bench_gain_if_sub' => $benchGain,
+                        'total_gain_if_sub' => $totalGain,
+                    ];
+
+                    if (in_array($benchPlayer->id, $usedBenchIds, true)) {
+                        continue;
+                    }
+
+                    if ($totalGain > $bestGain) {
+                        $bestPlayer = $benchPlayer;
+                        $bestGain = $totalGain;
+                    }
+                }
+
+                $this->debugGenerator('optimizer.greedy.choice', [
+                    'set_number' => $setIndex + 1,
+                    'set_actions' => $setActions,
+                    'slot_number' => $slotTemplate['slot_number'],
+                    'position' => $slotTemplate['position']->value,
+                    'starter' => $this->playerSummary($starter),
+                    'starter_remaining_before' => $starterRemaining,
+                    'starter_gain_if_no_sub' => min($setActions, $starterRemaining),
+                    'bench_options' => $benchOptions,
+                    'selected_player' => $this->playerSummary($bestPlayer),
+                    'selected_is_starter' => $bestPlayer->id === $starter->id,
+                    'selected_gain' => $bestGain,
+                    'remaining_capacity_before_update' => $remainingCapacity,
+                ]);
+
+                if ($bestPlayer->id === $starter->id) {
+                    $remainingCapacity[$starter->id] = max(0, $starterRemaining - $bestGain);
+
+                    $slots[$slotIndex]['sets'][] = $this->buildSetEntry(
+                        starter: $starter,
+                        activePlayer: $starter,
+                        setNumber: $setIndex + 1,
+                        slotNumber: $slotTemplate['slot_number'],
+                        positionLabel: $slotTemplate['position']->label(),
+                    );
+
+                    continue;
+                }
+
+                $starterGain = min(1, $starterRemaining);
+                $benchGain = min(max(0, $setActions - 1), $remainingCapacity[$bestPlayer->id] ?? 0);
+                $remainingCapacity[$starter->id] = max(0, $starterRemaining - $starterGain);
+                $remainingCapacity[$bestPlayer->id] = max(0, ($remainingCapacity[$bestPlayer->id] ?? 0) - $benchGain);
+                $usedBenchIds[] = $bestPlayer->id;
+
+                $slots[$slotIndex]['sets'][] = $this->buildSetEntry(
+                    starter: $starter,
+                    activePlayer: $bestPlayer,
+                    setNumber: $setIndex + 1,
+                    slotNumber: $slotTemplate['slot_number'],
+                    positionLabel: $slotTemplate['position']->label(),
+                );
+            }
+        }
+
+        return [
+            'slots' => $slots,
+        ];
+    }
+
+    protected function debugGenerator(string $message, array $context = []): void
+    {
+        $application = app();
+
+        if (! $application->bound('config') || ! (bool) $application['config']->get('app.debug')) {
+            return;
+        }
+
+        Log::debug($message, $context);
     }
 
     /**
