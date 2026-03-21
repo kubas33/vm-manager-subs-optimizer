@@ -146,15 +146,15 @@ new #[Title('Zawodnicy')] class extends Component
     protected function messages(): array
     {
         return [
-            'name.required' => 'Podaj nazwe zawodnika.',
-            'name.min' => 'Nazwa zawodnika musi miec co najmniej 3 znaki.',
-            'name.unique' => 'Zawodnik o tej nazwie juz istnieje.',
-            'position.required' => 'Wybierz pozycje.',
-            'position.enum' => 'Wybrana pozycja jest nieprawidlowa.',
+            'name.required' => 'Podaj nazwę zawodnika.',
+            'name.min' => 'Nazwa zawodnika musi mieć co najmniej 3 znaki.',
+            'name.unique' => 'Zawodnik o tej nazwie już istnieje.',
+            'position.required' => 'Wybierz pozycję.',
+            'position.enum' => 'Wybrana pozycja jest nieprawidłowa.',
             'trainingBar.required' => 'Podaj aktualny pasek treningowy.',
-            'trainingBar.integer' => 'Pasek treningowy musi byc liczba calkowita.',
-            'trainingBar.between' => 'Pasek treningowy musi miescic sie w zakresie 0-100.',
-            'active.required' => 'Okresl status aktywnosci zawodnika.',
+            'trainingBar.integer' => 'Pasek treningowy musi być liczbą całkowitą.',
+            'trainingBar.between' => 'Pasek treningowy musi mieścić się w zakresie 0-100.',
+            'active.required' => 'Określ status aktywności zawodnika.',
         ];
     }
 
@@ -173,14 +173,14 @@ new #[Title('Zawodnicy')] class extends Component
         <div class="space-y-2">
             <flux:heading size="xl" level="1">Zawodnicy</flux:heading>
             <flux:text class="max-w-2xl text-zinc-600 dark:text-zinc-300">
-                Tu zarzadzasz pula zawodnikow dla optymalizacji. Mozesz filtrowac liste, dodawac nowe rekordy i korygowac pasek treningowy przed analiza meczu.
+                Tu zarządzasz pulą zawodników dla optymalizacji. Możesz filtrować listę, dodawać nowe rekordy i korygować pasek treningowy przed analizą meczu.
             </flux:text>
         </div>
 
         <div class="flex items-center gap-3">
             <flux:badge color="emerald">{{ $this->activePlayersCount }} aktywnych</flux:badge>
             <flux:button variant="ghost" :href="route('optimizer.create')" wire:navigate>
-                Przejdz do optymalizacji
+                Przejdź do optymalizacji
             </flux:button>
         </div>
     </section>
@@ -195,7 +195,7 @@ new #[Title('Zawodnicy')] class extends Component
             <div class="mt-3 text-4xl font-semibold text-zinc-950 dark:text-zinc-50">{{ $this->activePlayersCount }}</div>
         </div>
         <div class="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
-            <flux:text class="text-sm uppercase tracking-[0.2em] text-zinc-500 dark:text-zinc-400">Sredni pasek</flux:text>
+            <flux:text class="text-sm uppercase tracking-[0.2em] text-zinc-500 dark:text-zinc-400">Średni pasek</flux:text>
             <div class="mt-3 text-4xl font-semibold text-zinc-950 dark:text-zinc-50">{{ $this->averageTrainingBar }}%</div>
         </div>
     </section>
@@ -213,7 +213,7 @@ new #[Title('Zawodnicy')] class extends Component
             </div>
 
             <form wire:submit="savePlayer" class="mt-6 space-y-5">
-                <flux:input wire:model.live.blur="name" label="Imie i nazwisko" placeholder="np. Jan Nowak" />
+                <flux:input wire:model.live.blur="name" label="Imię i nazwisko" placeholder="np. Jan Nowak" />
                 @error('name')
                     <flux:text class="-mt-3 text-sm text-rose-600 dark:text-rose-400">{{ $message }}</flux:text>
                 @enderror
@@ -232,7 +232,7 @@ new #[Title('Zawodnicy')] class extends Component
                     <flux:text class="-mt-3 text-sm text-rose-600 dark:text-rose-400">{{ $message }}</flux:text>
                 @enderror
 
-                <flux:switch wire:model="active" label="Aktywny w analizie" description="Wylaczenie ukrywa zawodnika z przyszlych analiz." />
+                <flux:switch wire:model="active" label="Aktywny w analizie" description="Wyłączenie ukrywa zawodnika z przyszłych analiz." />
 
                 <div class="flex items-center gap-4">
                     <flux:button variant="primary" type="submit">
@@ -251,10 +251,10 @@ new #[Title('Zawodnicy')] class extends Component
                 <div class="flex flex-col gap-5">
                     <div class="flex items-start justify-between gap-4">
                         <div>
-                            <flux:heading size="lg">Aktualna pula zawodnikow</flux:heading>
-                            <flux:text class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">Filtry dzialaja bez przeladowania strony i od razu zawezaja liste.</flux:text>
+                            <flux:heading size="lg">Aktualna pula zawodników</flux:heading>
+                            <flux:text class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">Filtry działają bez przeładowania strony i od razu zawężają listę.</flux:text>
                         </div>
-                        <flux:badge color="sky">{{ $this->players->count() }} wynikow</flux:badge>
+                        <flux:badge color="sky">{{ $this->players->count() }} wyników</flux:badge>
                     </div>
 
                     <div class="grid gap-4 md:grid-cols-[1.2fr_0.8fr_0.8fr]">
@@ -277,7 +277,7 @@ new #[Title('Zawodnicy')] class extends Component
             @if ($this->players->isEmpty())
                 <div class="px-6 py-12">
                     <flux:callout icon="magnifying-glass" color="amber">
-                        <flux:callout.heading>Brak wynikow</flux:callout.heading>
+                        <flux:callout.heading>Brak wyników</flux:callout.heading>
                         <flux:callout.text>Zmodyfikuj filtry albo dodaj nowego zawodnika po lewej stronie.</flux:callout.text>
                     </flux:callout>
                 </div>

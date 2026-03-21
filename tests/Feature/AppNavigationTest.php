@@ -13,7 +13,7 @@ test('authenticated users can visit players and optimizer pages', function () {
 
     $this->get(route('optimizer.create'))
         ->assertOk()
-        ->assertSee('Optymalizacja skladu');
+        ->assertSee('Optymalizacja składu');
 
     $this->get(route('optimizer.result'))
         ->assertOk()

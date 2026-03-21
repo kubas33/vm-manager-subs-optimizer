@@ -14,5 +14,5 @@ test('authenticated users can visit the dashboard', function () {
     $response = $this->get(route('dashboard'));
     $response->assertOk();
     $response->assertSee('VM Manager Subs Optimizer');
-    $response->assertSee('Przejdz do zawodnikow');
+    $response->assertSee('Przejdź do zawodników');
 });

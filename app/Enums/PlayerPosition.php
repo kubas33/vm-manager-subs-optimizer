@@ -13,10 +13,10 @@ enum PlayerPosition: string
     public function label(): string
     {
         return match ($this) {
-            self::Setter => 'Rozgrywajacy',
-            self::MiddleBlocker => 'Srodkowy',
-            self::OutsideHitter => 'Przyjmujacy',
-            self::Opposite => 'Atakujacy',
+            self::Setter => 'Rozgrywający',
+            self::MiddleBlocker => 'Środkowy',
+            self::OutsideHitter => 'Przyjmujący',
+            self::Opposite => 'Atakujący',
             self::Libero => 'Libero',
         };
     }

@@ -35,6 +35,11 @@ Lokalna aplikacja webowa oparta o Laravel, ktora:
 - Srodowisko lokalne: Laravel Sail
 - Stylowanie: na start podstawowy layout Blade z prostym, czytelnym UI
 
+## Zasady copy i jezyka
+
+- Interfejs uzytkownika prowadzimy po polsku.
+- W widokach i etykietach uzywamy poprawnych polskich znakow, bez upraszczania do ASCII.
+
 ## Glowny workflow uzytkownika
 
 1. Uzytkownik dodaje lub edytuje zawodnikow w bazie.

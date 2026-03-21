@@ -47,16 +47,16 @@ new #[Title('Dashboard')] class extends Component
                 <flux:badge color="emerald">MVP foundation</flux:badge>
                 <flux:heading size="xl" level="1">VM Manager Subs Optimizer</flux:heading>
                 <flux:text class="max-w-xl text-base text-zinc-600 dark:text-zinc-300">
-                    Bazowy szkielet aplikacji jest gotowy. Kolejne kroki to pelny ekran zawodnikow, formularz optymalizacji i silnik liczenia wariantow zmian.
+                    Bazowy szkielet aplikacji jest gotowy. Kolejne kroki to pełny ekran zawodników, formularz optymalizacji i silnik liczenia wariantów zmian.
                 </flux:text>
             </div>
 
             <div class="flex flex-col gap-3 sm:flex-row">
                 <flux:button variant="primary" :href="route('players.index')" wire:navigate>
-                    Przejdz do zawodnikow
+                    Przejdź do zawodników
                 </flux:button>
                 <flux:button variant="ghost" :href="route('optimizer.create')" wire:navigate>
-                    Otworz optymalizacje
+                    Otwórz optymalizację
                 </flux:button>
             </div>
         </div>
@@ -66,13 +66,13 @@ new #[Title('Dashboard')] class extends Component
         <div class="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
             <flux:text class="text-sm uppercase tracking-[0.2em] text-zinc-500 dark:text-zinc-400">Aktywni zawodnicy</flux:text>
             <div class="mt-3 text-4xl font-semibold text-zinc-950 dark:text-zinc-50">{{ $this->activePlayersCount }}</div>
-            <flux:text class="mt-3 text-sm text-zinc-600 dark:text-zinc-300">To glowna pula uwzgledniana przy optymalizacji skladu.</flux:text>
+            <flux:text class="mt-3 text-sm text-zinc-600 dark:text-zinc-300">To główna pula uwzględniana przy optymalizacji składu.</flux:text>
         </div>
 
         <div class="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
             <flux:text class="text-sm uppercase tracking-[0.2em] text-zinc-500 dark:text-zinc-400">Nieaktywni zawodnicy</flux:text>
             <div class="mt-3 text-4xl font-semibold text-zinc-950 dark:text-zinc-50">{{ $this->inactivePlayersCount }}</div>
-            <flux:text class="mt-3 text-sm text-zinc-600 dark:text-zinc-300">Przyda sie do czasowego ukrywania zawodnikow poza analiza.</flux:text>
+            <flux:text class="mt-3 text-sm text-zinc-600 dark:text-zinc-300">Przyda się do czasowego ukrywania zawodników poza analizą.</flux:text>
         </div>
 
         <div class="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
@@ -87,7 +87,7 @@ new #[Title('Dashboard')] class extends Component
             <div class="flex items-center justify-between gap-4">
                 <div>
                     <flux:heading size="lg">Pokrycie pozycji</flux:heading>
-                    <flux:text class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">Szybki przeglad, czy kazda pozycja ma zawodnikow gotowych do analizy.</flux:text>
+                    <flux:text class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">Szybki przegląd, czy każda pozycja ma zawodników gotowych do analizy.</flux:text>
                 </div>
                 <flux:badge color="sky">{{ count($this->positionCoverage) }} pozycji</flux:badge>
             </div>
@@ -108,16 +108,16 @@ new #[Title('Dashboard')] class extends Component
             <flux:heading size="lg">Co dalej</flux:heading>
             <div class="mt-4 space-y-4">
                 <div class="rounded-2xl border border-zinc-200/80 p-4 dark:border-zinc-700">
-                    <flux:text class="font-medium text-zinc-900 dark:text-zinc-100">1. Lista zawodnikow</flux:text>
-                    <flux:text class="mt-2 text-sm text-zinc-600 dark:text-zinc-300">Widok z filtrowaniem, formularzem dodawania i edycja paskow treningowych.</flux:text>
+                    <flux:text class="font-medium text-zinc-900 dark:text-zinc-100">1. Lista zawodników</flux:text>
+                    <flux:text class="mt-2 text-sm text-zinc-600 dark:text-zinc-300">Widok z filtrowaniem, formularzem dodawania i edycją pasków treningowych.</flux:text>
                 </div>
                 <div class="rounded-2xl border border-zinc-200/80 p-4 dark:border-zinc-700">
                     <flux:text class="font-medium text-zinc-900 dark:text-zinc-100">2. Formularz optymalizacji</flux:text>
-                    <flux:text class="mt-2 text-sm text-zinc-600 dark:text-zinc-300">Wybor dwoch pozycji i scenariusza meczu jako wejscie dla silnika.</flux:text>
+                    <flux:text class="mt-2 text-sm text-zinc-600 dark:text-zinc-300">Wybór dwóch pozycji i scenariusza meczu jako wejście dla silnika.</flux:text>
                 </div>
                 <div class="rounded-2xl border border-zinc-200/80 p-4 dark:border-zinc-700">
-                    <flux:text class="font-medium text-zinc-900 dark:text-zinc-100">3. Ranking wariantow</flux:text>
-                    <flux:text class="mt-2 text-sm text-zinc-600 dark:text-zinc-300">Ocena planow zmian pod maksymalny przyrost paska i minimalne straty.</flux:text>
+                    <flux:text class="font-medium text-zinc-900 dark:text-zinc-100">3. Ranking wariantów</flux:text>
+                    <flux:text class="mt-2 text-sm text-zinc-600 dark:text-zinc-300">Ocena planów zmian pod maksymalny przyrost paska i minimalne straty.</flux:text>
                 </div>
             </div>
         </div>

@@ -13,15 +13,15 @@ new #[Title('Wynik optymalizacji')] class extends Component
     <section class="rounded-3xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
         <flux:heading size="xl" level="1">Wynik optymalizacji</flux:heading>
         <flux:text class="mt-3 max-w-2xl text-zinc-600 dark:text-zinc-300">
-            Ta strona jest placeholderem pod wynik silnika obliczeniowego. Po wdrozeniu formularza i serwisu optymalizujacego pojawia sie tu starterzy, zmiennicy i ranking wariantow.
+            Ta strona jest placeholderem pod wynik silnika obliczeniowego. Po wdrożeniu formularza i serwisu optymalizującego pojawią się tu starterzy, zmiennicy i ranking wariantów.
         </flux:text>
 
         <div class="mt-6 flex gap-3">
             <flux:button variant="primary" :href="route('optimizer.create')" wire:navigate>
-                Wroc do formularza
+                Wróć do formularza
             </flux:button>
             <flux:button variant="ghost" :href="route('dashboard')" wire:navigate>
-                Wroc na dashboard
+                Wróć na dashboard
             </flux:button>
         </div>
     </section>

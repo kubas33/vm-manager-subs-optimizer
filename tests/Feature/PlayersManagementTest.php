@@ -91,17 +91,17 @@ test('players list can be filtered by position and status', function () {
     $this->actingAs(User::factory()->create());
 
     Player::factory()->forPosition(PlayerPosition::Setter)->create([
-        'name' => 'Rozgrywajacy Aktywny',
+        'name' => 'Rozgrywający Aktywny',
         'active' => true,
     ]);
 
     Player::factory()->forPosition(PlayerPosition::MiddleBlocker)->inactive()->create([
-        'name' => 'Srodkowy Nieaktywny',
+        'name' => 'Środkowy Nieaktywny',
     ]);
 
     Livewire::test('pages::players.index')
         ->set('filterPosition', PlayerPosition::Setter->value)
         ->set('filterActive', 'active')
-        ->assertSee('Rozgrywajacy Aktywny')
-        ->assertDontSee('Srodkowy Nieaktywny');
+        ->assertSee('Rozgrywający Aktywny')
+        ->assertDontSee('Środkowy Nieaktywny');
 });
