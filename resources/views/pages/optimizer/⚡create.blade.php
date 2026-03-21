@@ -1,7 +1,9 @@
 <?php
 
 use App\Enums\PlayerPosition;
+use App\MatchScenario;
 use App\Models\Player;
+use App\ScenarioSet;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 use Livewire\Attributes\Computed;
@@ -134,12 +136,12 @@ new #[Title('Optymalizacja')] class extends Component
     public function scenarioPreview(): array
     {
         try {
-            return $this->normalizeScenarios([
+            return $this->buildScenarioSet([
                 'scenarioMode' => $this->scenarioMode,
                 'presetKey' => $this->presetKey,
                 'singleScenario' => $this->singleScenario,
                 'multipleScenarios' => $this->multipleScenarios,
-            ]);
+            ])->toArray();
         } catch (ValidationException) {
             return [];
         }
@@ -221,7 +223,7 @@ new #[Title('Optymalizacja')] class extends Component
             'scenario_mode_label' => $this->scenarioModeLabel($validated['scenarioMode']),
             'scenario_source' => $scenarioSource,
             'scenario_source_label' => $scenarioSourceLabel,
-            'scenarios' => $this->normalizeScenarios($validated),
+            'scenarios' => $this->buildScenarioSet($validated)->toArray(),
         ];
     }
 
@@ -251,20 +253,29 @@ new #[Title('Optymalizacja')] class extends Component
      * @param  array<string, mixed>  $validated
      * @return array<int, array{label: string, input: string, sets: array<int, array{our_score: int, opponent_score: int, actions: int}>, sets_count: int, total_actions: int}>
      */
-    protected function normalizeScenarios(array $validated): array
+    protected function buildScenarioSet(array $validated): ScenarioSet
     {
-        return match ($validated['scenarioMode']) {
-            'preset' => [$this->normalizePresetScenario((string) $validated['presetKey'])],
-            'single' => [$this->normalizeScenarioLine((string) $validated['singleScenario'], 'Scenariusz ręczny')],
-            'multiple' => $this->normalizeMultipleScenarios((string) $validated['multipleScenarios']),
-            default => [],
-        };
+        try {
+            return match ($validated['scenarioMode']) {
+                'preset' => ScenarioSet::single($this->presetScenario((string) $validated['presetKey'])),
+                'single' => ScenarioSet::single(MatchScenario::fromInput((string) $validated['singleScenario'], 'Scenariusz ręczny')),
+                'multiple' => $this->multipleScenarioSet((string) $validated['multipleScenarios']),
+                default => $this->throwScenarioValidation('scenarioMode', 'Wybrany tryb scenariusza jest nieprawidłowy.'),
+            };
+        } catch (\InvalidArgumentException $exception) {
+            $this->throwScenarioValidation(
+                $validated['scenarioMode'] === 'preset'
+                    ? 'presetKey'
+                    : $this->scenarioInputField($validated['scenarioMode']),
+                $exception->getMessage(),
+            );
+        }
     }
 
     /**
-     * @return array{label: string, input: string, sets: array<int, array{our_score: int, opponent_score: int, actions: int}>, sets_count: int, total_actions: int}
+     * @return MatchScenario
      */
-    protected function normalizePresetScenario(string $presetKey): array
+    protected function presetScenario(string $presetKey): MatchScenario
     {
         $preset = $this->presetOptions()[$presetKey] ?? null;
 
@@ -272,13 +283,10 @@ new #[Title('Optymalizacja')] class extends Component
             $this->throwScenarioValidation('presetKey', 'Wybierz poprawny preset scenariusza.');
         }
 
-        return $this->normalizeScenarioLine($preset['scenario'], $preset['label']);
+        return MatchScenario::fromInput($preset['scenario'], $preset['label']);
     }
 
-    /**
-     * @return array<int, array{label: string, input: string, sets: array<int, array{our_score: int, opponent_score: int, actions: int}>, sets_count: int, total_actions: int}>
-     */
-    protected function normalizeMultipleScenarios(string $scenarios): array
+    protected function multipleScenarioSet(string $scenarios): ScenarioSet
     {
         $lines = preg_split('/\r\n|\r|\n/', trim($scenarios));
 
@@ -290,50 +298,7 @@ new #[Title('Optymalizacja')] class extends Component
             $this->throwScenarioValidation('multipleScenarios', 'Usuń puste wiersze między scenariuszami.');
         }
 
-        return collect($lines)
-            ->map(fn (string $line, int $index) => $this->normalizeScenarioLine($line, 'Scenariusz '.($index + 1)))
-            ->all();
-    }
-
-    /**
-     * @return array{label: string, input: string, sets: array<int, array{our_score: int, opponent_score: int, actions: int}>, sets_count: int, total_actions: int}
-     */
-    protected function normalizeScenarioLine(string $scenario, string $label): array
-    {
-        $scenario = trim($scenario);
-
-        if ($scenario === '') {
-            $this->throwScenarioValidation($this->scenarioInputField($this->scenarioMode), 'Scenariusz nie może być pusty.');
-        }
-
-        $setStrings = preg_split('/\s*,\s*/', $scenario);
-
-        if ($setStrings === false || count($setStrings) < 3 || count($setStrings) > 5) {
-            $this->throwScenarioValidation($this->scenarioInputField($this->scenarioMode), 'Scenariusz musi zawierać od 3 do 5 setów.');
-        }
-
-        $sets = collect($setStrings)->map(function (string $setString) {
-            if (! preg_match('/^(?<our>\d{1,2}):(?<opponent>\d{1,2})$/', trim($setString), $matches)) {
-                $this->throwScenarioValidation($this->scenarioInputField($this->scenarioMode), 'Każdy set musi mieć format `25:20`.');
-            }
-
-            $ourScore = (int) $matches['our'];
-            $opponentScore = (int) $matches['opponent'];
-
-            return [
-                'our_score' => $ourScore,
-                'opponent_score' => $opponentScore,
-                'actions' => $ourScore + $opponentScore,
-            ];
-        })->all();
-
-        return [
-            'label' => $label,
-            'input' => $scenario,
-            'sets' => $sets,
-            'sets_count' => count($sets),
-            'total_actions' => collect($sets)->sum('actions'),
-        ];
+        return ScenarioSet::fromInputs(array_values($lines));
     }
 
     protected function scenarioModeLabel(string $scenarioMode): string
