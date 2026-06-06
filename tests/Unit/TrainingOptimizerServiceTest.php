@@ -242,6 +242,10 @@ test('training optimizer service aggregates scenario evaluations across multiple
     );
 
     $firstEvaluation = [
+        'scenario_label' => 'Scenariusz 1',
+        'scenario_input' => '25:20, 25:18, 25:22',
+        'scenario_sets_count' => 3,
+        'scenario_total_actions' => 135,
         'total_gained_training' => 100,
         'final_training_bar_sum' => 72,
         'players_below_fairness_threshold' => 1,
@@ -279,6 +283,10 @@ test('training optimizer service aggregates scenario evaluations across multiple
     ];
 
     $secondEvaluation = [
+        'scenario_label' => 'Scenariusz 2',
+        'scenario_input' => '25:21, 22:25, 25:20, 25:19',
+        'scenario_sets_count' => 4,
+        'scenario_total_actions' => 182,
         'total_gained_training' => 120,
         'final_training_bar_sum' => 100,
         'players_below_fairness_threshold' => 1,
@@ -324,4 +332,86 @@ test('training optimizer service aggregates scenario evaluations across multiple
         ->and($aggregated['wasted_actions'])->toBe(30)
         ->and($aggregated['substitutions_count'])->toBe(5)
         ->and(collect($aggregated['player_results'])->pluck('final_training_bar')->all())->toBe([20, 55]);
+});
+
+test('training optimizer service uses worst-case scenario metrics in safe mode', function () {
+    $service = new TrainingOptimizerService(
+        new TrainingGainCalculator,
+        new SubstitutionPlanGenerator,
+    );
+
+    $aggregate = Closure::bind(
+        fn (array $evaluations): array => $this->aggregateScenarioEvaluations($evaluations, true),
+        $service,
+        TrainingOptimizerService::class,
+    );
+
+    $firstEvaluation = [
+        'scenario_label' => 'Standardowe 3:0',
+        'scenario_input' => '25:20, 25:18, 25:22',
+        'scenario_sets_count' => 3,
+        'scenario_total_actions' => 135,
+        'total_gained_training' => 80,
+        'final_training_bar_sum' => 80,
+        'players_below_fairness_threshold' => 1,
+        'lowest_final_training_bar' => 10,
+        'wasted_actions' => 12,
+        'substitutions_count' => 3,
+        'player_results' => [
+            [
+                'id' => 1,
+                'name' => 'Setter A',
+                'position' => PlayerPosition::Setter->value,
+                'position_label' => PlayerPosition::Setter->label(),
+                'training_bar' => 0,
+                'starting_training_bar' => 0,
+                'played_actions' => 30,
+                'gained_training' => 30,
+                'final_training_bar' => 30,
+                'wasted_actions' => 0,
+            ],
+        ],
+        'plan' => ['slots' => [['slot_number' => 1]]],
+    ];
+
+    $secondEvaluation = [
+        'scenario_label' => 'Standardowe 3:1',
+        'scenario_input' => '25:21, 22:25, 25:20, 25:19',
+        'scenario_sets_count' => 4,
+        'scenario_total_actions' => 150,
+        'total_gained_training' => 120,
+        'final_training_bar_sum' => 120,
+        'players_below_fairness_threshold' => 0,
+        'lowest_final_training_bar' => 42,
+        'wasted_actions' => 0,
+        'substitutions_count' => 0,
+        'player_results' => [
+            [
+                'id' => 2,
+                'name' => 'Setter B',
+                'position' => PlayerPosition::Setter->value,
+                'position_label' => PlayerPosition::Setter->label(),
+                'training_bar' => 0,
+                'starting_training_bar' => 0,
+                'played_actions' => 40,
+                'gained_training' => 40,
+                'final_training_bar' => 40,
+                'wasted_actions' => 0,
+            ],
+        ],
+        'plan' => ['slots' => [['slot_number' => 2]]],
+    ];
+
+    $aggregated = $aggregate([$firstEvaluation, $secondEvaluation]);
+
+    expect($aggregated['scenario_count'])->toBe(2)
+        ->and($aggregated['total_gained_training'])->toBe(80)
+        ->and($aggregated['final_training_bar_sum'])->toBe(80)
+        ->and($aggregated['players_below_fairness_threshold'])->toBe(1)
+        ->and($aggregated['lowest_final_training_bar'])->toBe(10)
+        ->and($aggregated['wasted_actions'])->toBe(12)
+        ->and($aggregated['substitutions_count'])->toBe(3)
+        ->and($aggregated['player_results'][0]['name'])->toBe('Setter A')
+        ->and($aggregated['plan'])->toBe(['slots' => [['slot_number' => 1]]])
+        ->and(collect($aggregated['scenario_results'])->firstWhere('is_worst_case', true)['label'])->toBe('Standardowe 3:0');
 });

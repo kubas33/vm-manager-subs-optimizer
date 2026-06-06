@@ -58,6 +58,7 @@ final class TrainingOptimizerService
         MatchScenario $scenario,
         int $limit = 10,
         int $fairnessThreshold = 20,
+        bool $safeMode = false,
     ): array {
         return $this->optimizeWithScenarios(
             slotDefinitions: $slotDefinitions,
@@ -65,6 +66,7 @@ final class TrainingOptimizerService
             templateScenario: $scenario,
             limit: $limit,
             fairnessThreshold: $fairnessThreshold,
+            safeMode: $safeMode,
         );
     }
 
@@ -73,6 +75,7 @@ final class TrainingOptimizerService
         ScenarioSet $scenarioSet,
         int $limit = 10,
         int $fairnessThreshold = 20,
+        bool $safeMode = false,
     ): array {
         $scenarios = array_values($scenarioSet->scenarios);
 
@@ -82,6 +85,7 @@ final class TrainingOptimizerService
             templateScenario: $this->selectTemplateScenario($scenarios),
             limit: $limit,
             fairnessThreshold: $fairnessThreshold,
+            safeMode: $safeMode,
         );
     }
 
@@ -131,6 +135,7 @@ final class TrainingOptimizerService
         MatchScenario $templateScenario,
         int $limit,
         int $fairnessThreshold,
+        bool $safeMode,
     ): array {
         $fairnessThreshold = max(0, min(100, $fairnessThreshold));
 
@@ -163,7 +168,13 @@ final class TrainingOptimizerService
         ]);
 
         $rankedPlans = array_map(
-            fn (array $plan): array => $this->evaluatePlanAcrossScenarios($plan, $scenarios, $selectedCandidates, $fairnessThreshold),
+            fn (array $plan): array => $this->evaluatePlanAcrossScenarios(
+                $plan,
+                $scenarios,
+                $selectedCandidates,
+                $fairnessThreshold,
+                $safeMode,
+            ),
             $plans,
         );
 
@@ -473,17 +484,27 @@ final class TrainingOptimizerService
         array $scenarios,
         array $slotDefinitions,
         int $fairnessThreshold,
+        bool $safeMode,
     ): array {
-        $evaluations = array_map(
-            fn (MatchScenario $scenario): array => $this->evaluatePlan($plan, $scenario, $slotDefinitions, $fairnessThreshold),
-            $scenarios,
-        );
+        $evaluations = array_map(function (MatchScenario $scenario) use ($plan, $slotDefinitions, $fairnessThreshold): array {
+            return [
+                'scenario_label' => $scenario->label,
+                'scenario_input' => $scenario->input,
+                'scenario_sets_count' => $scenario->setsCount(),
+                'scenario_total_actions' => $scenario->totalActions(),
+                ...$this->evaluatePlan($plan, $scenario, $slotDefinitions, $fairnessThreshold),
+            ];
+        }, $scenarios);
 
-        return $this->aggregateScenarioEvaluations($evaluations);
+        return $this->aggregateScenarioEvaluations($evaluations, $safeMode);
     }
 
     /**
      * @param  array<int, array{
+     *     scenario_label: string,
+     *     scenario_input: string,
+     *     scenario_sets_count: int,
+     *     scenario_total_actions: int,
      *     total_gained_training: int,
      *     final_training_bar_sum: int,
      *     players_below_fairness_threshold: int,
@@ -527,6 +548,47 @@ final class TrainingOptimizerService
      *     wasted_actions: int,
      *     substitutions_count: int,
      *     scenario_count: int,
+     *     scenario_results: array<int, array{
+     *         label: string,
+     *         input: string,
+     *         sets_count: int,
+     *         total_actions: int,
+     *         total_gained_training: int,
+     *         final_training_bar_sum: int,
+     *         players_below_fairness_threshold: int,
+     *         lowest_final_training_bar: int,
+     *         wasted_actions: int,
+     *         substitutions_count: int,
+     *         is_worst_case: bool,
+     *         player_results: array<int, array{
+     *             id: int,
+     *             name: string,
+     *             position: string,
+     *             position_label: string,
+     *             training_bar: int,
+     *             starting_training_bar: int,
+     *             played_actions: int,
+     *             gained_training: int,
+     *             final_training_bar: int,
+     *             wasted_actions: int
+     *         }>,
+     *         plan: array{
+     *             slots: array<int, array{
+     *                 slot_number: int,
+     *                 position: string,
+     *                 position_label: string,
+     *                 starter: array{id: int, name: string, position: string, training_bar: int},
+     *                 sets: array<int, array{
+     *                     set_number: int,
+     *                     starter_player: array{id: int, name: string, position: string, training_bar: int},
+     *                     active_player: array{id: int, name: string, position: string, training_bar: int},
+     *                     substitution_player: array{id: int, name: string, position: string, training_bar: int}|null,
+     *                     activation_point: int|null,
+     *                     description: string
+     *                 }>
+     *             }>
+     *         }
+     *     }>,
      *     player_results: array<int, array{
      *         id: int,
      *         name: string,
@@ -557,7 +619,7 @@ final class TrainingOptimizerService
      *     }
      * }
      */
-    protected function aggregateScenarioEvaluations(array $evaluations): array
+    protected function aggregateScenarioEvaluations(array $evaluations, bool $safeMode = false): array
     {
         if ($evaluations === []) {
             return [
@@ -568,12 +630,59 @@ final class TrainingOptimizerService
                 'wasted_actions' => 0,
                 'substitutions_count' => 0,
                 'scenario_count' => 0,
+                'scenario_results' => [],
                 'player_results' => [],
                 'plan' => ['slots' => []],
             ];
         }
 
         $scenarioCount = count($evaluations);
+        $worstCaseEvaluation = collect($evaluations)
+            ->sort(fn (array $left, array $right): int => $this->compareScenarioEvaluations($left, $right))
+            ->first();
+
+        $scenarioResults = collect($evaluations)
+            ->map(function (array $evaluation) use ($worstCaseEvaluation): array {
+                $isWorstCase = $evaluation['scenario_label'] === $worstCaseEvaluation['scenario_label']
+                    && $evaluation['scenario_input'] === $worstCaseEvaluation['scenario_input']
+                    && $evaluation['scenario_sets_count'] === $worstCaseEvaluation['scenario_sets_count']
+                    && $evaluation['total_gained_training'] === $worstCaseEvaluation['total_gained_training']
+                    && $evaluation['lowest_final_training_bar'] === $worstCaseEvaluation['lowest_final_training_bar'];
+
+                return [
+                    'label' => $evaluation['scenario_label'],
+                    'input' => $evaluation['scenario_input'],
+                    'sets_count' => $evaluation['scenario_sets_count'],
+                    'total_actions' => $evaluation['scenario_total_actions'],
+                    'total_gained_training' => $evaluation['total_gained_training'],
+                    'final_training_bar_sum' => $evaluation['final_training_bar_sum'],
+                    'players_below_fairness_threshold' => $evaluation['players_below_fairness_threshold'],
+                    'lowest_final_training_bar' => $evaluation['lowest_final_training_bar'],
+                    'wasted_actions' => $evaluation['wasted_actions'],
+                    'substitutions_count' => $evaluation['substitutions_count'],
+                    'is_worst_case' => $isWorstCase,
+                    'player_results' => $evaluation['player_results'],
+                    'plan' => $evaluation['plan'],
+                ];
+            })
+            ->values()
+            ->all();
+
+        if ($safeMode) {
+            return [
+                'total_gained_training' => $worstCaseEvaluation['total_gained_training'],
+                'final_training_bar_sum' => $worstCaseEvaluation['final_training_bar_sum'],
+                'players_below_fairness_threshold' => $worstCaseEvaluation['players_below_fairness_threshold'],
+                'lowest_final_training_bar' => $worstCaseEvaluation['lowest_final_training_bar'],
+                'wasted_actions' => $worstCaseEvaluation['wasted_actions'],
+                'substitutions_count' => $worstCaseEvaluation['substitutions_count'],
+                'scenario_count' => $scenarioCount,
+                'scenario_results' => $scenarioResults,
+                'player_results' => $worstCaseEvaluation['player_results'],
+                'plan' => $worstCaseEvaluation['plan'],
+            ];
+        }
+
         $playerBuckets = [];
 
         foreach ($evaluations as $evaluation) {
@@ -632,6 +741,7 @@ final class TrainingOptimizerService
             'wasted_actions' => array_sum(array_column($evaluations, 'wasted_actions')),
             'substitutions_count' => array_sum(array_column($evaluations, 'substitutions_count')),
             'scenario_count' => $scenarioCount,
+            'scenario_results' => $scenarioResults,
             'player_results' => $playerResults,
             'plan' => $evaluations[0]['plan'],
         ];
@@ -734,6 +844,43 @@ final class TrainingOptimizerService
         }
 
         return 0;
+    }
+
+    /**
+     * @param  array{
+     *     total_gained_training: int,
+     *     players_below_fairness_threshold: int,
+     *     lowest_final_training_bar: int,
+     *     wasted_actions: int,
+     *     substitutions_count: int
+     * }  $left
+     * @param  array{
+     *     total_gained_training: int,
+     *     players_below_fairness_threshold: int,
+     *     lowest_final_training_bar: int,
+     *     wasted_actions: int,
+     *     substitutions_count: int
+     * }  $right
+     */
+    protected function compareScenarioEvaluations(array $left, array $right): int
+    {
+        if ($left['total_gained_training'] !== $right['total_gained_training']) {
+            return $left['total_gained_training'] <=> $right['total_gained_training'];
+        }
+
+        if ($left['players_below_fairness_threshold'] !== $right['players_below_fairness_threshold']) {
+            return $right['players_below_fairness_threshold'] <=> $left['players_below_fairness_threshold'];
+        }
+
+        if ($left['lowest_final_training_bar'] !== $right['lowest_final_training_bar']) {
+            return $left['lowest_final_training_bar'] <=> $right['lowest_final_training_bar'];
+        }
+
+        if ($left['wasted_actions'] !== $right['wasted_actions']) {
+            return $right['wasted_actions'] <=> $left['wasted_actions'];
+        }
+
+        return $right['substitutions_count'] <=> $left['substitutions_count'];
     }
 
     /**

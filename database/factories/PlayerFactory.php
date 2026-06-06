@@ -19,6 +19,7 @@ class PlayerFactory extends Factory
     public function definition(): array
     {
         return [
+            'vm_player_id' => null,
             'name' => fake()->firstName().' '.fake()->lastName(),
             'position' => fake()->randomElement(PlayerPosition::cases()),
             'training_bar' => fake()->numberBetween(0, 100),
@@ -44,6 +45,13 @@ class PlayerFactory extends Factory
     {
         return $this->state(fn (array $attributes) => [
             'training_bar' => 100,
+        ]);
+    }
+
+    public function withVmPlayerId(int $vmPlayerId): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'vm_player_id' => $vmPlayerId,
         ]);
     }
 }

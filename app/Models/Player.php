@@ -9,7 +9,7 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 
-#[Fillable(['name', 'position', 'training_bar', 'active'])]
+#[Fillable(['vm_player_id', 'name', 'position', 'training_bar', 'active'])]
 class Player extends Model
 {
     /** @use HasFactory<PlayerFactory> */
@@ -21,6 +21,7 @@ class Player extends Model
     protected function casts(): array
     {
         return [
+            'vm_player_id' => 'integer',
             'position' => PlayerPosition::class,
             'training_bar' => 'integer',
             'active' => 'boolean',

@@ -5,12 +5,14 @@ use App\Models\Player;
 
 test('player attributes are cast to domain types', function () {
     $player = Player::factory()->create([
+        'vm_player_id' => 2060721,
         'position' => PlayerPosition::MiddleBlocker,
         'training_bar' => 68,
         'active' => false,
     ]);
 
     expect($player->fresh())
+        ->vm_player_id->toBe(2060721)
         ->position->toBe(PlayerPosition::MiddleBlocker)
         ->training_bar->toBe(68)
         ->active->toBeFalse();

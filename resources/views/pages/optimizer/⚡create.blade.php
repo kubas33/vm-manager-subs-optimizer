@@ -21,6 +21,7 @@ new #[Title('Optymalizacja')] class extends Component
     public string $multipleScenarios = "25:20, 25:18, 25:22\n25:22, 22:25, 25:21, 25:19";
     public string $sharedReserveLimit = '5';
     public string $fairnessThreshold = '20';
+    public bool $scenarioSafetyMode = false;
     /** @var array<string, string> */
     public array $reserveLimitsByPosition = [];
 
@@ -29,6 +30,7 @@ new #[Title('Optymalizacja')] class extends Component
         $this->primaryPosition = PlayerPosition::Setter->value;
         $this->secondaryPosition = PlayerPosition::MiddleBlocker->value;
         $this->syncReserveLimitState();
+        $this->syncScenarioSafetyMode();
     }
 
     #[Computed]
@@ -155,6 +157,15 @@ new #[Title('Optymalizacja')] class extends Component
 
     public function updatedScenarioMode(): void
     {
+        $this->syncScenarioSafetyMode();
+
+        $this->resetValidation();
+    }
+
+    public function updatedPresetKey(): void
+    {
+        $this->syncScenarioSafetyMode();
+
         $this->resetValidation();
     }
 
@@ -185,8 +196,185 @@ new #[Title('Optymalizacja')] class extends Component
         $payload = $this->normalizedPayload($validated);
 
         session()->put('optimizer.input', $payload);
+        $this->dispatch('optimizer-draft-saved', draft: $this->draftPayload());
 
         $this->redirectRoute('optimizer.result', navigate: true);
+    }
+
+    /**
+     * Restore the last saved optimizer draft.
+     *
+     * @param  array<string, mixed>  $draft
+     */
+    public function restoreDraft(array $draft): void
+    {
+        $this->primaryPosition = $this->restorePosition(
+            $draft['primaryPosition'] ?? null,
+            $this->primaryPosition,
+        );
+
+        $this->secondaryPosition = $this->restorePosition(
+            $draft['secondaryPosition'] ?? null,
+            $this->secondaryPosition,
+        );
+
+        $this->scenarioMode = $this->restoreScenarioMode(
+            $draft['scenarioMode'] ?? null,
+            $this->scenarioMode,
+        );
+
+        $this->presetKey = $this->restorePresetKey(
+            $draft['presetKey'] ?? null,
+            $this->presetKey,
+        );
+
+        $this->singleScenario = $this->restoreText(
+            $draft['singleScenario'] ?? null,
+            $this->singleScenario,
+        );
+
+        $this->multipleScenarios = $this->restoreText(
+            $draft['multipleScenarios'] ?? null,
+            $this->multipleScenarios,
+        );
+
+        $this->sharedReserveLimit = $this->restoreBoundedIntegerString(
+            $draft['sharedReserveLimit'] ?? null,
+            0,
+            5,
+            $this->sharedReserveLimit,
+        );
+
+        $this->fairnessThreshold = $this->restoreBoundedIntegerString(
+            $draft['fairnessThreshold'] ?? null,
+            0,
+            100,
+            $this->fairnessThreshold,
+        );
+
+        $this->scenarioSafetyMode = $this->scenarioMode === 'preset'
+            ? (
+                array_key_exists('scenarioSafetyMode', $draft)
+                    ? $this->restoreBoolean($draft['scenarioSafetyMode'], $this->scenarioSafetyMode)
+                    : $this->defaultScenarioSafetyModeForPreset($this->presetKey)
+            )
+            : false;
+
+        $this->reserveLimitsByPosition = $this->restoreReserveLimitsByPosition(
+            $draft['reserveLimitsByPosition'] ?? null,
+            $this->reserveLimitsByPosition,
+        );
+
+        $this->syncReserveLimitState();
+        $this->resetValidation();
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    protected function draftPayload(): array
+    {
+        return $this->validationData();
+    }
+
+    protected function draftStorageKey(): string
+    {
+        $scope = auth()->id() === null
+            ? 'guest'
+            : 'user-'.auth()->id();
+
+        return 'optimizer.create.last-config.v1.'.$scope;
+    }
+
+    protected function restorePosition(mixed $value, string $default): string
+    {
+        if (! is_string($value)) {
+            return $default;
+        }
+
+        return PlayerPosition::tryFrom($value)?->value ?? $default;
+    }
+
+    protected function restoreScenarioMode(mixed $value, string $default): string
+    {
+        if (! is_string($value) || ! array_key_exists($value, $this->scenarioModes())) {
+            return $default;
+        }
+
+        return $value;
+    }
+
+    protected function restorePresetKey(mixed $value, string $default): string
+    {
+        if (! is_string($value) || ! array_key_exists($value, $this->presetOptions())) {
+            return $default;
+        }
+
+        return $value;
+    }
+
+    protected function restoreText(mixed $value, string $default): string
+    {
+        if (! is_string($value) || $value === '') {
+            return $default;
+        }
+
+        return $value;
+    }
+
+    protected function restoreBoundedIntegerString(mixed $value, int $min, int $max, string $default): string
+    {
+        if (filter_var($value, FILTER_VALIDATE_INT) === false) {
+            return $default;
+        }
+
+        $integerValue = (int) $value;
+
+        if ($integerValue < $min || $integerValue > $max) {
+            return $default;
+        }
+
+        return (string) $integerValue;
+    }
+
+    protected function restoreBoolean(mixed $value, bool $default): bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        $normalized = filter_var($value, FILTER_VALIDATE_BOOL, FILTER_NULL_ON_FAILURE);
+
+        return $normalized ?? $default;
+    }
+
+    /**
+     * @param  array<string, mixed>|mixed  $draftLimits
+     * @param  array<string, string>  $default
+     * @return array<string, string>
+     */
+    protected function restoreReserveLimitsByPosition(mixed $draftLimits, array $default): array
+    {
+        if (! is_array($draftLimits)) {
+            return $default;
+        }
+
+        $normalized = $default;
+
+        foreach ($draftLimits as $position => $value) {
+            if (! is_string($position) || PlayerPosition::tryFrom($position) === null) {
+                continue;
+            }
+
+            $normalized[$position] = $this->restoreBoundedIntegerString(
+                $value,
+                0,
+                5,
+                $normalized[$position] ?? '2',
+            );
+        }
+
+        return $normalized;
     }
 
     /**
@@ -202,6 +390,7 @@ new #[Title('Optymalizacja')] class extends Component
             'singleScenario' => [Rule::requiredIf($this->scenarioMode === 'single'), 'string'],
             'multipleScenarios' => [Rule::requiredIf($this->scenarioMode === 'multiple'), 'string'],
             'fairnessThreshold' => ['required', 'integer', 'min:0', 'max:100'],
+            'scenarioSafetyMode' => ['boolean'],
         ];
 
         if ($this->usesSharedReservePool()) {
@@ -302,6 +491,10 @@ new #[Title('Optymalizacja')] class extends Component
             'scenario_source' => $scenarioSource,
             'scenario_source_label' => $scenarioSourceLabel,
             'fairness_threshold' => (int) $validated['fairnessThreshold'],
+            'scenario_safety_mode' => (bool) ($validated['scenarioSafetyMode'] ?? false),
+            'scenario_safety_mode_label' => (bool) ($validated['scenarioSafetyMode'] ?? false)
+                ? 'Bezpieczny'
+                : 'Standardowy',
             'reserve_pools' => $this->normalizeReservePools($validated),
             'scenarios' => $this->buildScenarioSet($validated)->toArray(),
         ];
@@ -364,7 +557,9 @@ new #[Title('Optymalizacja')] class extends Component
     {
         try {
             return match ($validated['scenarioMode']) {
-                'preset' => ScenarioSet::single($this->presetScenario((string) $validated['presetKey'])),
+                'preset' => ($validated['scenarioSafetyMode'] ?? false)
+                    ? $this->safePresetScenarioSet((string) $validated['presetKey'])
+                    : ScenarioSet::single($this->presetScenario((string) $validated['presetKey'])),
                 'single' => ScenarioSet::single(MatchScenario::fromInput((string) $validated['singleScenario'], 'Scenariusz ręczny')),
                 'multiple' => $this->multipleScenarioSet((string) $validated['multipleScenarios']),
                 default => $this->throwScenarioValidation('scenarioMode', 'Wybrany tryb scenariusza jest nieprawidłowy.'),
@@ -391,6 +586,25 @@ new #[Title('Optymalizacja')] class extends Component
         }
 
         return MatchScenario::fromInput($preset['scenario'], $preset['label']);
+    }
+
+    protected function safePresetScenarioSet(string $presetKey): ScenarioSet
+    {
+        $safePresetKeys = match ($presetKey) {
+            'easy_3_0' => ['easy_3_0'],
+            'standard_3_0' => ['standard_3_0'],
+            'standard_3_1' => ['standard_3_0', 'standard_3_1'],
+            'hard_3_2' => ['standard_3_0', 'standard_3_1', 'hard_3_2'],
+            default => [$presetKey],
+        };
+
+        return new ScenarioSet(array_map(
+            fn (string $key): MatchScenario => MatchScenario::fromInput(
+                $this->presetOptions()[$key]['scenario'],
+                $this->presetOptions()[$key]['label'],
+            ),
+            $safePresetKeys,
+        ));
     }
 
     protected function multipleScenarioSet(string $scenarios): ScenarioSet
@@ -439,6 +653,7 @@ new #[Title('Optymalizacja')] class extends Component
             'singleScenario' => $this->singleScenario,
             'multipleScenarios' => $this->multipleScenarios,
             'fairnessThreshold' => $this->fairnessThreshold,
+            'scenarioSafetyMode' => $this->scenarioSafetyMode,
             'sharedReserveLimit' => $this->sharedReserveLimit,
             'reserveLimitsByPosition' => $this->reserveLimitsByPosition,
         ];
@@ -447,6 +662,22 @@ new #[Title('Optymalizacja')] class extends Component
     public function usesSharedReservePool(): bool
     {
         return $this->primaryPosition !== '' && $this->primaryPosition === $this->secondaryPosition;
+    }
+
+    protected function syncScenarioSafetyMode(): void
+    {
+        if ($this->scenarioMode !== 'preset') {
+            $this->scenarioSafetyMode = false;
+
+            return;
+        }
+
+        $this->scenarioSafetyMode = $this->defaultScenarioSafetyModeForPreset($this->presetKey);
+    }
+
+    public function defaultScenarioSafetyModeForPreset(string $presetKey): bool
+    {
+        return in_array($presetKey, ['standard_3_1', 'hard_3_2'], true);
     }
 
     /**
@@ -483,7 +714,40 @@ new #[Title('Optymalizacja')] class extends Component
 };
 ?>
 
-<div class="flex h-full w-full flex-1 flex-col gap-6 p-4 md:p-6">
+<div
+    x-data="{
+        storageKey: @js($this->draftStorageKey()),
+        loadDraft() {
+            try {
+                const storedDraft = localStorage.getItem(this.storageKey);
+
+                if (!storedDraft) {
+                    return;
+                }
+
+                const parsedDraft = JSON.parse(storedDraft);
+
+                if (!parsedDraft || Array.isArray(parsedDraft) || typeof parsedDraft !== 'object') {
+                    return;
+                }
+
+                $wire.restoreDraft(parsedDraft);
+            } catch (error) {
+                // Ignore invalid or unavailable localStorage data.
+            }
+        },
+        saveDraft(draft) {
+            try {
+                localStorage.setItem(this.storageKey, JSON.stringify(draft));
+            } catch (error) {
+                // Ignore storage failures in browsers that block localStorage.
+            }
+        },
+    }"
+    x-init="loadDraft()"
+    x-on:optimizer-draft-saved.window="saveDraft($event.detail.draft)"
+    class="flex h-full w-full flex-1 flex-col gap-6 p-4 md:p-6"
+>
     <section class="flex flex-col gap-4 rounded-3xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-700 dark:bg-zinc-900 lg:flex-row lg:items-end lg:justify-between">
         <div class="space-y-2">
             <flux:heading size="xl" level="1">Optymalizacja składu</flux:heading>
@@ -543,6 +807,7 @@ new #[Title('Optymalizacja')] class extends Component
                         <flux:heading size="base">Tryb scenariusza</flux:heading>
                         <flux:text class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
                             Formularz dynamicznie pokazuje właściwe pole wejściowe dla wybranego trybu.
+                            Dla dłuższych presetów tryb bezpieczny włącza się domyślnie.
                         </flux:text>
                     </div>
 
@@ -649,6 +914,31 @@ new #[Title('Optymalizacja')] class extends Component
 
                 @if ($scenarioMode === 'preset')
                     <div class="space-y-4">
+                        <div class="rounded-2xl border border-zinc-200 bg-zinc-50/70 p-4 dark:border-zinc-700 dark:bg-zinc-800/60">
+                            <div class="flex flex-wrap items-start justify-between gap-3">
+                                <div class="space-y-1">
+                                    <flux:text class="font-medium text-zinc-950 dark:text-zinc-50">Tryb bezpieczny</flux:text>
+                                    <flux:text class="text-sm text-zinc-600 dark:text-zinc-300">
+                                        Dla presetów uwzględnia krótsze scenariusze i wybiera wariant odporny na wcześniejsze zakończenie meczu.
+                                    </flux:text>
+                                </div>
+
+                                @if ($this->defaultScenarioSafetyModeForPreset($presetKey))
+                                    <flux:badge color="emerald">domyślnie włączony</flux:badge>
+                                @else
+                                    <flux:badge color="sky">opcjonalny</flux:badge>
+                                @endif
+                            </div>
+
+                            <div class="mt-4">
+                                <flux:switch
+                                    wire:model.live="scenarioSafetyMode"
+                                    label="Włącz tryb bezpieczny"
+                                    description="Przy 3:1 i 3:2 włącza się automatycznie."
+                                />
+                            </div>
+                        </div>
+
                         <flux:select wire:model.live="presetKey" label="Preset scenariusza">
                             @foreach ($this->presetOptions as $value => $preset)
                                 <option value="{{ $value }}">{{ $preset['label'] }}</option>

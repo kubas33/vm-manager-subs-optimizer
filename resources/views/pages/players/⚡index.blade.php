@@ -14,10 +14,17 @@ new #[Title('Zawodnicy')] class extends Component
     public string $filterActive = 'all';
 
     public ?int $editingPlayerId = null;
+    public int|string|null $vmPlayerId = null;
     public string $name = '';
     public string $position = '';
     public int|string $trainingBar = 0;
     public bool $active = true;
+
+    public bool $confirmingPlayerDeletion = false;
+
+    public ?int $playerIdPendingDeletion = null;
+
+    public string $playerNamePendingDeletion = '';
 
     #[Computed]
     public function players()
@@ -81,6 +88,7 @@ new #[Title('Zawodnicy')] class extends Component
             : Player::query()->findOrFail($this->editingPlayerId);
 
         $player->fill([
+            'vm_player_id' => $validated['vmPlayerId'] === null || $validated['vmPlayerId'] === '' ? null : (int) $validated['vmPlayerId'],
             'name' => $validated['name'],
             'position' => $validated['position'],
             'training_bar' => (int) $validated['trainingBar'],
@@ -99,6 +107,7 @@ new #[Title('Zawodnicy')] class extends Component
         $player = Player::query()->findOrFail($playerId);
 
         $this->editingPlayerId = $player->id;
+        $this->vmPlayerId = $player->vm_player_id;
         $this->name = $player->name;
         $this->position = $player->position->value;
         $this->trainingBar = $player->training_bar;
@@ -110,6 +119,50 @@ new #[Title('Zawodnicy')] class extends Component
     public function cancelEditing(): void
     {
         $this->resetForm();
+    }
+
+    public function requestDeletePlayer(int $playerId): void
+    {
+        $player = Player::query()->findOrFail($playerId);
+
+        $this->playerIdPendingDeletion = $player->id;
+        $this->playerNamePendingDeletion = $player->name;
+        $this->confirmingPlayerDeletion = true;
+    }
+
+    public function cancelPlayerDeletion(): void
+    {
+        $this->confirmingPlayerDeletion = false;
+        $this->playerIdPendingDeletion = null;
+        $this->playerNamePendingDeletion = '';
+    }
+
+    public function deletePlayer(): void
+    {
+        if ($this->playerIdPendingDeletion === null) {
+            return;
+        }
+
+        $playerId = $this->playerIdPendingDeletion;
+
+        Player::query()->whereKey($playerId)->delete();
+
+        if ($this->editingPlayerId === $playerId) {
+            $this->resetForm();
+        }
+
+        $this->cancelPlayerDeletion();
+
+        unset($this->players, $this->activePlayersCount, $this->totalPlayersCount, $this->averageTrainingBar);
+        $this->dispatch('player-deleted');
+    }
+
+    public function updatedConfirmingPlayerDeletion(bool $value): void
+    {
+        if (! $value) {
+            $this->playerIdPendingDeletion = null;
+            $this->playerNamePendingDeletion = '';
+        }
     }
 
     public function updatedFilterPosition(): void
@@ -133,6 +186,7 @@ new #[Title('Zawodnicy')] class extends Component
     protected function rules(): array
     {
         return [
+            'vmPlayerId' => ['nullable', 'integer', Rule::unique(Player::class, 'vm_player_id')->ignore($this->editingPlayerId)],
             'name' => ['required', 'string', 'min:3', 'max:255', Rule::unique(Player::class, 'name')->ignore($this->editingPlayerId)],
             'position' => ['required', Rule::enum(PlayerPosition::class)],
             'trainingBar' => ['required', 'integer', 'between:0,100'],
@@ -146,6 +200,8 @@ new #[Title('Zawodnicy')] class extends Component
     protected function messages(): array
     {
         return [
+            'vmPlayerId.integer' => 'ID z gry musi być liczbą całkowitą.',
+            'vmPlayerId.unique' => 'Ten ID z gry jest już przypisany do innego zawodnika.',
             'name.required' => 'Podaj nazwę zawodnika.',
             'name.min' => 'Nazwa zawodnika musi mieć co najmniej 3 znaki.',
             'name.unique' => 'Zawodnik o tej nazwie już istnieje.',
@@ -160,7 +216,7 @@ new #[Title('Zawodnicy')] class extends Component
 
     protected function resetForm(): void
     {
-        $this->reset(['editingPlayerId', 'name', 'trainingBar']);
+        $this->reset(['editingPlayerId', 'vmPlayerId', 'name', 'trainingBar']);
         $this->position = PlayerPosition::Setter->value;
         $this->active = true;
         $this->resetValidation();
@@ -173,7 +229,7 @@ new #[Title('Zawodnicy')] class extends Component
         <div class="space-y-2">
             <flux:heading size="xl" level="1">Zawodnicy</flux:heading>
             <flux:text class="max-w-2xl text-zinc-600 dark:text-zinc-300">
-                Tu zarządzasz pulą zawodników dla optymalizacji. Możesz filtrować listę, dodawać nowe rekordy i korygować pasek treningowy przed analizą meczu.
+                Tu zarządzasz pulą zawodników dla optymalizacji. Możesz filtrować listę, dodawać i usuwać rekordy oraz korygować pasek treningowy przed analizą meczu.
             </flux:text>
         </div>
 
@@ -213,6 +269,11 @@ new #[Title('Zawodnicy')] class extends Component
             </div>
 
             <form wire:submit="savePlayer" class="mt-6 space-y-5">
+                <flux:input wire:model.live.blur="vmPlayerId" label="ID z gry" type="number" min="1" placeholder="np. 2060721" />
+                @error('vmPlayerId')
+                    <flux:text class="-mt-3 text-sm text-rose-600 dark:text-rose-400">{{ $message }}</flux:text>
+                @enderror
+
                 <flux:input wire:model.live.blur="name" label="Imię i nazwisko" placeholder="np. Jan Nowak" />
                 @error('name')
                     <flux:text class="-mt-3 text-sm text-rose-600 dark:text-rose-400">{{ $message }}</flux:text>
@@ -284,12 +345,17 @@ new #[Title('Zawodnicy')] class extends Component
             @else
                 <div class="divide-y divide-zinc-200 dark:divide-zinc-700">
                     @foreach ($this->players as $player)
-                        <div wire:key="{{ $player->id }}" class="grid gap-4 px-6 py-4 md:grid-cols-[1.1fr_0.8fr_130px_120px_110px] md:items-center">
+                        <div wire:key="{{ $player->id }}" class="grid gap-4 px-6 py-4 md:grid-cols-[1.1fr_0.8fr_120px_130px_120px_minmax(11rem,1fr)] md:items-center">
                             <div class="min-w-0">
                                 <flux:text class="truncate font-medium text-zinc-950 dark:text-zinc-50">{{ $player->name }}</flux:text>
                             </div>
                             <div>
                                 <flux:badge color="sky">{{ $player->position->label() }}</flux:badge>
+                            </div>
+                            <div>
+                                <flux:text class="text-sm text-zinc-600 dark:text-zinc-300">
+                                    {{ $player->vm_player_id === null ? 'Brak ID' : $player->vm_player_id }}
+                                </flux:text>
                             </div>
                             <div>
                                 <flux:text class="text-sm text-zinc-600 dark:text-zinc-300">{{ $player->training_bar }}%</flux:text>
@@ -302,9 +368,12 @@ new #[Title('Zawodnicy')] class extends Component
                                     {{ $player->active ? 'aktywny' : 'nieaktywny' }}
                                 </flux:badge>
                             </div>
-                            <div class="flex justify-start md:justify-end">
+                            <div class="flex flex-wrap justify-start gap-2 md:justify-end">
                                 <flux:button variant="ghost" wire:click="editPlayer({{ $player->id }})">
                                     Edytuj
+                                </flux:button>
+                                <flux:button variant="danger" wire:click="requestDeletePlayer({{ $player->id }})">
+                                    Usuń
                                 </flux:button>
                             </div>
                         </div>
@@ -313,4 +382,25 @@ new #[Title('Zawodnicy')] class extends Component
             @endif
         </div>
     </section>
+
+    <flux:modal wire:model.self="confirmingPlayerDeletion" class="max-w-lg">
+        <div class="space-y-4">
+            <flux:heading size="lg">Usunąć zawodnika?</flux:heading>
+            <flux:text class="text-zinc-600 dark:text-zinc-300">
+                Czy na pewno chcesz trwale usunąć <span class="font-medium text-zinc-950 dark:text-zinc-50">{{ $playerNamePendingDeletion }}</span> z puli? Tej operacji nie można cofnąć.
+            </flux:text>
+        </div>
+
+        <div class="mt-6 flex justify-end gap-2">
+            <flux:modal.close>
+                <flux:button variant="filled" wire:click="cancelPlayerDeletion">
+                    Anuluj
+                </flux:button>
+            </flux:modal.close>
+
+            <flux:button variant="danger" wire:click="deletePlayer">
+                Usuń zawodnika
+            </flux:button>
+        </div>
+    </flux:modal>
 </div>

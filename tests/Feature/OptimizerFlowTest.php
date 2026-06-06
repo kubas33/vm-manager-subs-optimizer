@@ -40,7 +40,8 @@ test('optimizer form stores normalized preset input and redirects to result page
         ->set('presetKey', 'standard_3_0')
         ->call('submit')
         ->assertHasNoErrors()
-        ->assertRedirect(route('optimizer.result'));
+        ->assertRedirect(route('optimizer.result'))
+        ->assertDispatched('optimizer-draft-saved');
 
     expect(session('optimizer.input'))->toMatchArray([
         'scenario_mode' => 'preset',
@@ -66,6 +67,7 @@ test('optimizer form stores normalized preset input and redirects to result page
 
     $this->get(route('optimizer.result'))
         ->assertOk()
+        ->assertSee('Propozycja składu')
         ->assertSee('Rozgrywający')
         ->assertSee('Środkowy')
         ->assertSee('Preset')
@@ -124,6 +126,130 @@ test('optimizer form shows shared reserve pool input for identical positions', f
         ->set('secondaryPosition', PlayerPosition::MiddleBlocker->value)
         ->assertSee('Wspólna pula rezerwowych')
         ->assertDontSee('Pula rezerwowych dla Środkowy');
+});
+
+test('optimizer form restores a saved draft for shared reserve pool', function () {
+    $this->actingAs(User::factory()->create());
+
+    $component = Livewire::test('pages::optimizer.create')
+        ->call('restoreDraft', [
+            'primaryPosition' => PlayerPosition::MiddleBlocker->value,
+            'secondaryPosition' => PlayerPosition::MiddleBlocker->value,
+            'scenarioMode' => 'preset',
+            'presetKey' => 'standard_3_1',
+            'singleScenario' => '25:20, 25:18, 25:22',
+            'multipleScenarios' => "25:20, 25:18, 25:22\n25:22, 22:25, 25:21, 25:19",
+            'sharedReserveLimit' => '4',
+            'fairnessThreshold' => '30',
+            'scenarioSafetyMode' => true,
+            'reserveLimitsByPosition' => [
+                PlayerPosition::Setter->value => '2',
+            ],
+        ]);
+
+    $component
+        ->assertSet('primaryPosition', PlayerPosition::MiddleBlocker->value)
+        ->assertSet('secondaryPosition', PlayerPosition::MiddleBlocker->value)
+        ->assertSet('scenarioMode', 'preset')
+        ->assertSet('presetKey', 'standard_3_1')
+        ->assertSet('sharedReserveLimit', '4')
+        ->assertSet('fairnessThreshold', '30')
+        ->assertSet('scenarioSafetyMode', true);
+
+    expect($component->instance()->usesSharedReservePool())->toBeTrue();
+});
+
+test('optimizer form restores a saved draft for separate reserve pools', function () {
+    $this->actingAs(User::factory()->create());
+
+    $component = Livewire::test('pages::optimizer.create')
+        ->call('restoreDraft', [
+            'primaryPosition' => PlayerPosition::Setter->value,
+            'secondaryPosition' => PlayerPosition::OutsideHitter->value,
+            'scenarioMode' => 'multiple',
+            'presetKey' => 'hard_3_2',
+            'singleScenario' => '25:20, 25:18, 25:22',
+            'multipleScenarios' => "25:20, 25:18, 25:22\n25:22, 22:25, 25:21, 25:19",
+            'sharedReserveLimit' => '3',
+            'fairnessThreshold' => '18',
+            'scenarioSafetyMode' => false,
+            'reserveLimitsByPosition' => [
+                PlayerPosition::Setter->value => '2',
+                PlayerPosition::OutsideHitter->value => '3',
+            ],
+        ]);
+
+    $component
+        ->assertSet('primaryPosition', PlayerPosition::Setter->value)
+        ->assertSet('secondaryPosition', PlayerPosition::OutsideHitter->value)
+        ->assertSet('scenarioMode', 'multiple')
+        ->assertSet('presetKey', 'hard_3_2')
+        ->assertSet('sharedReserveLimit', '3')
+        ->assertSet('fairnessThreshold', '18')
+        ->assertSet('scenarioSafetyMode', false);
+
+    expect($component->instance()->usesSharedReservePool())->toBeFalse()
+        ->and($component->instance()->reserveLimitsByPosition)->toMatchArray([
+            PlayerPosition::Setter->value => '2',
+            PlayerPosition::OutsideHitter->value => '3',
+        ]);
+});
+
+test('optimizer form ignores invalid draft values and keeps defaults', function () {
+    $this->actingAs(User::factory()->create());
+
+    $component = Livewire::test('pages::optimizer.create')
+        ->call('restoreDraft', [
+            'primaryPosition' => 'not-a-position',
+            'secondaryPosition' => [],
+            'scenarioMode' => 'invalid',
+            'presetKey' => 'missing',
+            'singleScenario' => '',
+            'multipleScenarios' => '',
+            'sharedReserveLimit' => '999',
+            'fairnessThreshold' => '-1',
+            'scenarioSafetyMode' => 'maybe',
+            'reserveLimitsByPosition' => [
+                PlayerPosition::Setter->value => '9',
+            ],
+        ]);
+
+    $component
+        ->assertSet('primaryPosition', PlayerPosition::Setter->value)
+        ->assertSet('secondaryPosition', PlayerPosition::MiddleBlocker->value)
+        ->assertSet('scenarioMode', 'preset')
+        ->assertSet('presetKey', 'standard_3_0')
+        ->assertSet('sharedReserveLimit', '5')
+        ->assertSet('fairnessThreshold', '20')
+        ->assertSet('scenarioSafetyMode', false);
+
+    expect($component->instance()->reserveLimitsByPosition)->toMatchArray([
+        PlayerPosition::Setter->value => '2',
+        PlayerPosition::MiddleBlocker->value => '2',
+    ]);
+});
+
+test('optimizer form renders browser draft storage hook with versioned key', function () {
+    $user = User::factory()->create();
+    $this->actingAs($user);
+
+    $this->get(route('optimizer.create'))
+        ->assertOk()
+        ->assertSee("optimizer.create.last-config.v1.user-{$user->id}", false)
+        ->assertSee('optimizer-draft-saved', false);
+});
+
+test('optimizer form defaults safe mode for longer presets', function () {
+    $this->actingAs(User::factory()->create());
+
+    Livewire::test('pages::optimizer.create')
+        ->assertSet('scenarioSafetyMode', false)
+        ->set('presetKey', 'standard_3_1')
+        ->assertSet('scenarioSafetyMode', true)
+        ->set('presetKey', 'standard_3_0')
+        ->assertSet('scenarioSafetyMode', false)
+        ->set('presetKey', 'hard_3_2')
+        ->assertSet('scenarioSafetyMode', true);
 });
 
 test('optimizer result page maps shared reserve pool to both analyzed slots', function () {
@@ -248,6 +374,91 @@ test('optimizer result page shows multiple variants for a large shared middle bl
         ->assertSee('wariantów');
 });
 
+test('optimizer result page shows safe preset breakdown across shorter scenarios', function () {
+    $this->actingAs(User::factory()->create());
+
+    Player::factory()->create([
+        'name' => 'Middle A',
+        'position' => PlayerPosition::MiddleBlocker,
+        'training_bar' => 0,
+    ]);
+    Player::factory()->create([
+        'name' => 'Middle B',
+        'position' => PlayerPosition::MiddleBlocker,
+        'training_bar' => 3,
+    ]);
+    Player::factory()->create([
+        'name' => 'Middle C',
+        'position' => PlayerPosition::MiddleBlocker,
+        'training_bar' => 14,
+    ]);
+    Player::factory()->create([
+        'name' => 'Middle D',
+        'position' => PlayerPosition::MiddleBlocker,
+        'training_bar' => 38,
+    ]);
+    Player::factory()->create([
+        'name' => 'Middle E',
+        'position' => PlayerPosition::MiddleBlocker,
+        'training_bar' => 46,
+    ]);
+    Player::factory()->create([
+        'name' => 'Middle F',
+        'position' => PlayerPosition::MiddleBlocker,
+        'training_bar' => 52,
+    ]);
+    Player::factory()->create([
+        'name' => 'Middle G',
+        'position' => PlayerPosition::MiddleBlocker,
+        'training_bar' => 53,
+    ]);
+
+    Livewire::test('pages::optimizer.create')
+        ->set('primaryPosition', PlayerPosition::MiddleBlocker->value)
+        ->set('secondaryPosition', PlayerPosition::MiddleBlocker->value)
+        ->set('scenarioMode', 'preset')
+        ->set('presetKey', 'standard_3_1')
+        ->set('sharedReserveLimit', '5')
+        ->call('submit')
+        ->assertHasNoErrors()
+        ->assertRedirect(route('optimizer.result'));
+
+    expect(session('optimizer.input'))->toMatchArray([
+        'scenario_safety_mode' => true,
+        'scenario_safety_mode_label' => 'Bezpieczny',
+        'scenario_mode' => 'preset',
+        'scenario_source' => 'standard_3_1',
+        'scenario_source_label' => 'Standardowe 3:1',
+    ]);
+
+    expect(collect(session('optimizer.input.scenarios'))->map(fn (array $scenario): array => [
+        'label' => $scenario['label'],
+        'input' => $scenario['input'],
+        'sets_count' => $scenario['sets_count'],
+        'total_actions' => $scenario['total_actions'],
+    ])->all())->toBe([
+        [
+            'label' => 'Standardowe 3:0',
+            'input' => '25:20, 25:18, 25:22',
+            'sets_count' => 3,
+            'total_actions' => 135,
+        ],
+        [
+            'label' => 'Standardowe 3:1',
+            'input' => '25:21, 22:25, 25:20, 25:19',
+            'sets_count' => 4,
+            'total_actions' => 182,
+        ],
+    ]);
+
+    $this->get(route('optimizer.result'))
+        ->assertOk()
+        ->assertSee('Tryb bezpieczeństwa: włączony')
+        ->assertSee('Standardowe 3:0')
+        ->assertSee('Standardowe 3:1')
+        ->assertSee('Najgorszy');
+});
+
 test('optimizer result page aggregates multiple scenarios in ranking output', function () {
     $this->actingAs(User::factory()->create());
 
@@ -350,5 +561,69 @@ test('optimizer result page shows empty state when there is no saved input', fun
 
     $this->get(route('optimizer.result'))
         ->assertOk()
+        ->assertSee('Propozycja składu')
         ->assertSee('Brak danych wejściowych');
+});
+
+test('optimizer result page shows full lineup recommendation when roster is complete', function () {
+    $this->actingAs(User::factory()->create());
+
+    Player::factory()->forPosition(PlayerPosition::Opposite)->create([
+        'name' => 'Lineup Opposite Low',
+        'training_bar' => 5,
+    ]);
+    Player::factory()->forPosition(PlayerPosition::Opposite)->create([
+        'name' => 'Lineup Opposite Alt',
+        'training_bar' => 35,
+    ]);
+    Player::factory()->forPosition(PlayerPosition::MiddleBlocker)->create([
+        'name' => 'Lineup Middle Low',
+        'training_bar' => 8,
+    ]);
+    Player::factory()->forPosition(PlayerPosition::MiddleBlocker)->create([
+        'name' => 'Lineup Middle High',
+        'training_bar' => 22,
+    ]);
+    Player::factory()->forPosition(PlayerPosition::MiddleBlocker)->create([
+        'name' => 'Lineup Middle Alt',
+        'training_bar' => 40,
+    ]);
+    Player::factory()->forPosition(PlayerPosition::OutsideHitter)->create([
+        'name' => 'Lineup Outside Low',
+        'training_bar' => 10,
+    ]);
+    Player::factory()->forPosition(PlayerPosition::OutsideHitter)->create([
+        'name' => 'Lineup Outside Mid',
+        'training_bar' => 18,
+    ]);
+    Player::factory()->forPosition(PlayerPosition::OutsideHitter)->create([
+        'name' => 'Lineup Outside Alt',
+        'training_bar' => 30,
+    ]);
+    Player::factory()->forPosition(PlayerPosition::Setter)->create([
+        'name' => 'Lineup Setter Low',
+        'training_bar' => 12,
+    ]);
+    Player::factory()->forPosition(PlayerPosition::Setter)->create([
+        'name' => 'Lineup Setter Alt',
+        'training_bar' => 45,
+    ]);
+    Player::factory()->forPosition(PlayerPosition::Libero)->create([
+        'name' => 'Lineup Libero Low',
+        'training_bar' => 7,
+    ]);
+    Player::factory()->forPosition(PlayerPosition::Libero)->create([
+        'name' => 'Lineup Libero Alt',
+        'training_bar' => 50,
+    ]);
+
+    $this->get(route('optimizer.result'))
+        ->assertOk()
+        ->assertSee('Propozycja składu')
+        ->assertSee('Skład główny')
+        ->assertSee('Alternatywy')
+        ->assertSee('Lineup Opposite Low')
+        ->assertSee('zmiany:')
+        ->assertSee('Alternatywa 1')
+        ->assertSee('Suma pasków:');
 });
