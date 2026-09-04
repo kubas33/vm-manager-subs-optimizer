@@ -67,7 +67,7 @@ test('optimizer form stores normalized preset input and redirects to result page
 
     $this->get(route('optimizer.result'))
         ->assertOk()
-        ->assertSee('Propozycja składu')
+        ->assertSee('Skład dla wariantu 1')
         ->assertSee('Rozgrywający')
         ->assertSee('Środkowy')
         ->assertSee('Preset')
@@ -76,6 +76,11 @@ test('optimizer form stores normalized preset input and redirects to result page
         ->assertSee('Pule rezerwowych')
         ->assertSee('Próg minimalnego paska: 20%')
         ->assertSee('Top warianty')
+        ->assertSee('Reguły dla wybranego scenariusza')
+        ->assertSee('Pierwszy skład wariantu 1')
+        ->assertSee('Lista rezerwowych dla wariantu')
+        ->assertSee('Aktualizuję szczegóły wariantu')
+        ->assertSee('Zmarnowane')
         ->assertSee('Setter Alpha')
         ->assertSee('Middle Alpha');
 });
@@ -106,6 +111,102 @@ test('optimizer form allows the same position in both analyzed slots', function 
             'candidate_limit' => 7,
         ],
     ]);
+});
+
+test('optimizer form supports three slots and separate reserve pools per position', function () {
+    $this->actingAs(User::factory()->create());
+
+    Livewire::test('pages::optimizer.create')
+        ->set('primaryPosition', PlayerPosition::MiddleBlocker->value)
+        ->set('secondaryPosition', PlayerPosition::MiddleBlocker->value)
+        ->call('addThirdSlot')
+        ->set('tertiaryPosition', PlayerPosition::Opposite->value)
+        ->set('reserveLimitsByPosition.'.PlayerPosition::MiddleBlocker->value, '4')
+        ->set('reserveLimitsByPosition.'.PlayerPosition::Opposite->value, '1')
+        ->call('submit')
+        ->assertHasNoErrors()
+        ->assertRedirect(route('optimizer.result'));
+
+    expect(collect(session('optimizer.input.positions'))->pluck('value')->all())->toBe([
+        PlayerPosition::MiddleBlocker->value,
+        PlayerPosition::MiddleBlocker->value,
+        PlayerPosition::Opposite->value,
+    ])->and(session('optimizer.input.reserve_pools'))->toBe([
+        [
+            'position' => PlayerPosition::MiddleBlocker->value,
+            'position_label' => PlayerPosition::MiddleBlocker->label(),
+            'slot_count' => 2,
+            'reserve_limit' => 4,
+            'candidate_limit' => 6,
+        ],
+        [
+            'position' => PlayerPosition::Opposite->value,
+            'position_label' => PlayerPosition::Opposite->label(),
+            'slot_count' => 1,
+            'reserve_limit' => 1,
+            'candidate_limit' => 2,
+        ],
+    ]);
+});
+
+test('optimizer excludes a player locked in a non-optimized lineup slot from the reserve pool', function () {
+    $this->actingAs(User::factory()->create());
+
+    $optimizedStarter = Player::factory()->forPosition(PlayerPosition::OutsideHitter)->create([
+        'name' => 'Wierzbicki, Tymon',
+        'training_bar' => 0,
+    ]);
+    $lockedStarter = Player::factory()->forPosition(PlayerPosition::OutsideHitter)->create([
+        'name' => 'Król, Łukasz',
+        'training_bar' => 30,
+    ]);
+    $reserve = Player::factory()->forPosition(PlayerPosition::OutsideHitter)->create([
+        'name' => 'Rezerwowy Przyjmujący',
+        'training_bar' => 40,
+    ]);
+
+    session()->put('optimizer.input', [
+        'positions' => [[
+            'value' => PlayerPosition::OutsideHitter->value,
+            'label' => PlayerPosition::OutsideHitter->label(),
+            'active_players' => 3,
+        ]],
+        'scenario_mode' => 'preset',
+        'scenario_mode_label' => 'Preset',
+        'scenario_source' => 'easy_3_0',
+        'scenario_source_label' => 'Łatwe 3:0',
+        'fairness_threshold' => 20,
+        'scenario_safety_mode' => false,
+        'reserve_pools' => [[
+            'position' => PlayerPosition::OutsideHitter->value,
+            'position_label' => PlayerPosition::OutsideHitter->label(),
+            'slot_count' => 1,
+            'reserve_limit' => 1,
+            'candidate_limit' => 2,
+        ]],
+        'scenarios' => [MatchScenario::fromInput('25:12, 25:14, 25:13', 'Łatwe 3:0')->toArray()],
+    ]);
+
+    $component = Livewire::test('pages::optimizer.result');
+    $candidateIds = collect($component->get('slotDefinitions'))
+        ->flatMap(fn (array $slot): array => $slot['players'])
+        ->pluck('id')
+        ->unique()
+        ->values()
+        ->all();
+    $bestPlan = $component->get('rankedPlans')[0];
+    $substituteIds = collect($bestPlan['plan']['slots'])
+        ->flatMap(fn (array $slot): array => $slot['sets'])
+        ->pluck('substitution_player.id')
+        ->filter()
+        ->unique();
+    $lineupPlayerIds = collect($component->get('lineupRecommendations')['recommendations'][0]['slots'])
+        ->pluck('player.id')
+        ->filter();
+
+    expect($candidateIds)->toContain($optimizedStarter->id, $reserve->id)
+        ->not->toContain($lockedStarter->id)
+        ->and($lineupPlayerIds->intersect($substituteIds))->toBeEmpty();
 });
 
 test('optimizer form shows separate reserve pool inputs for different positions', function () {
@@ -250,6 +351,98 @@ test('optimizer form defaults safe mode for longer presets', function () {
         ->assertSet('scenarioSafetyMode', false)
         ->set('presetKey', 'hard_3_2')
         ->assertSet('scenarioSafetyMode', true);
+});
+
+test('optimizer safe mode for standard three nil includes dropped set scenarios', function () {
+    $this->actingAs(User::factory()->create());
+
+    foreach (range(1, 7) as $index) {
+        Player::factory()->forPosition(PlayerPosition::MiddleBlocker)->create([
+            'name' => 'Safe Mode Middle '.$index,
+            'training_bar' => $index * 5,
+        ]);
+    }
+
+    Livewire::test('pages::optimizer.create')
+        ->set('primaryPosition', PlayerPosition::MiddleBlocker->value)
+        ->set('secondaryPosition', PlayerPosition::MiddleBlocker->value)
+        ->set('scenarioMode', 'preset')
+        ->set('presetKey', 'standard_3_0')
+        ->set('scenarioSafetyMode', true)
+        ->set('sharedReserveLimit', '5')
+        ->call('submit')
+        ->assertHasNoErrors()
+        ->assertRedirect(route('optimizer.result'));
+
+    expect(session('optimizer.input.scenarios'))
+        ->toHaveCount(3)
+        ->and(collect(session('optimizer.input.scenarios'))->pluck('label')->all())->toBe([
+            'Standardowe 3:0',
+            'Standardowe 3:1',
+            'Trudne 3:2',
+        ])
+        ->and(collect(session('optimizer.input.scenarios'))->pluck('sets_count')->all())->toBe([3, 4, 5]);
+
+    $bestPlan = Livewire::test('pages::optimizer.result')
+        ->get('rankedPlans')[0];
+
+    $maximumPlannedSet = collect($bestPlan['plan']['slots'])
+        ->flatMap(fn (array $slot): array => $slot['sets'])
+        ->max('set_number');
+
+    $maximumPlannedSetByScenario = collect($bestPlan['scenario_results'])
+        ->mapWithKeys(fn (array $scenarioResult): array => [
+            $scenarioResult['label'] => collect($scenarioResult['plan']['slots'])
+                ->flatMap(fn (array $slot): array => $slot['sets'])
+                ->max('set_number'),
+        ])
+        ->all();
+
+    expect($maximumPlannedSet)->toBe(5)
+        ->and($maximumPlannedSetByScenario)->toBe([
+            'Standardowe 3:0' => 3,
+            'Standardowe 3:1' => 4,
+            'Trudne 3:2' => 5,
+        ]);
+
+    $resultComponent = Livewire::test('pages::optimizer.result')
+        ->call('selectScenario', 0);
+
+    $benchPlayers = $resultComponent->instance()->benchPlayers($bestPlan['plan']);
+
+    expect($resultComponent->get('selectedScenarioResult')['label'])->toBe('Standardowe 3:0')
+        ->and(collect($resultComponent->get('selectedScenarioResult')['plan']['slots'])
+            ->flatMap(fn (array $slot): array => $slot['sets'])
+            ->max('set_number'))->toBe(3)
+        ->and($benchPlayers)->not->toBeEmpty()
+        ->and(collect($benchPlayers)->flatMap(fn (array $benchPlayer): array => $benchPlayer['sets'])->max())->toBe(5);
+
+    $resultComponent
+        ->call('selectScenario', 2)
+        ->call('selectPlan', 1);
+
+    $selectedPlan = $resultComponent->get('selectedPlan');
+    $selectedPlanStarterIds = collect($selectedPlan['plan']['slots'])
+        ->pluck('starter.id')
+        ->sort()
+        ->values()
+        ->all();
+    $selectedPlanBenchIds = collect($resultComponent->instance()->benchPlayers($selectedPlan['plan']))
+        ->pluck('id')
+        ->sort()
+        ->values()
+        ->all();
+    $selectedLineupIds = collect($resultComponent->get('lineupRecommendations')['recommendations'][0]['slots'])
+        ->pluck('player.id')
+        ->filter()
+        ->sort()
+        ->values()
+        ->all();
+
+    expect($resultComponent->get('selectedPlanNumber'))->toBe(2)
+        ->and($resultComponent->get('selectedScenarioResult')['is_worst_case'])->toBeTrue()
+        ->and($selectedLineupIds)->toContain(...$selectedPlanStarterIds)
+        ->and(array_intersect($selectedLineupIds, $selectedPlanBenchIds))->toBeEmpty();
 });
 
 test('optimizer result page maps shared reserve pool to both analyzed slots', function () {
@@ -520,7 +713,7 @@ test('optimizer result page aggregates multiple scenarios in ranking output', fu
         ->assertOk()
         ->assertSee('Agregacja scenariuszy: 2')
         ->assertSee('Scenariusz referencyjny: Scenariusz 2')
-        ->assertSee('Ranking jest agregowany po wszystkich scenariuszach')
+        ->assertSee('Ranking liczy zakresy wynikające z niepewnego momentu zmiany')
         ->assertSee('Scenariusze: 2');
 });
 

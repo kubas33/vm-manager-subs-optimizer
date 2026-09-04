@@ -18,12 +18,23 @@ test('substitution plan generator creates legal variants for two different posit
         ['slot_number' => 2, 'position' => PlayerPosition::Opposite, 'players' => [$oppositeA, $oppositeB]],
     ], $scenario);
 
-    expect($plans)->toHaveCount(256)
+    $pointThresholds = collect($plans)
+        ->flatMap(fn (array $plan): array => $plan['slots'])
+        ->flatMap(fn (array $slot): array => $slot['sets'])
+        ->pluck('point_threshold')
+        ->filter()
+        ->unique()
+        ->values()
+        ->all();
+
+    expect(count($plans))->toBeGreaterThan(256)
         ->and($plans[0]['slots'])->toHaveCount(2)
         ->and($plans[0]['slots'][0]['position'])->toBe(PlayerPosition::Setter->value)
         ->and($plans[0]['slots'][1]['position'])->toBe(PlayerPosition::Opposite->value)
         ->and($plans[0]['slots'][0]['sets'])->toHaveCount(3)
-        ->and($plans[0]['slots'][1]['sets'])->toHaveCount(3);
+        ->and($plans[0]['slots'][1]['sets'])->toHaveCount(3)
+        ->and($pointThresholds)->toContain(1, 5)
+        ->and(max($pointThresholds))->toBeLessThanOrEqual(5);
 });
 
 test('substitution plan generator supports two slots with the same position without duplicating active players', function () {
@@ -38,7 +49,7 @@ test('substitution plan generator supports two slots with the same position with
         ['slot_number' => 2, 'position' => PlayerPosition::MiddleBlocker, 'players' => [$middleA, $middleB, $middleC]],
     ], $scenario);
 
-    expect($plans)->toHaveCount(162);
+    expect(count($plans))->toBeGreaterThan(162);
 
     foreach ($plans as $plan) {
         for ($setIndex = 0; $setIndex < 3; $setIndex++) {
@@ -64,10 +75,40 @@ test('substitution plan generator returns no plans when there are too few player
     expect($plans)->toBe([]);
 });
 
-test('substitution plan generator requires exactly two analyzed slots', function () {
+test('substitution plan generator rejects more than three analyzed slots', function () {
     $scenario = MatchScenario::fromInput('25:20, 25:18, 25:22', 'Standardowe 3:0');
 
+    $setter = Player::factory()->make(['id' => 30, 'position' => PlayerPosition::Setter]);
+
     (new SubstitutionPlanGenerator)->generate([
-        ['slot_number' => 1, 'position' => PlayerPosition::Setter, 'players' => []],
+        ['slot_number' => 1, 'position' => PlayerPosition::Setter, 'players' => [$setter]],
+        ['slot_number' => 2, 'position' => PlayerPosition::Setter, 'players' => [$setter]],
+        ['slot_number' => 3, 'position' => PlayerPosition::Setter, 'players' => [$setter]],
+        ['slot_number' => 4, 'position' => PlayerPosition::Setter, 'players' => [$setter]],
     ], $scenario);
-})->throws(InvalidArgumentException::class, 'Generator oczekuje dokładnie dwóch analizowanych slotów.');
+})->throws(InvalidArgumentException::class, 'Generator oczekuje od jednego do trzech analizowanych slotów.');
+
+test('greedy generator supports three analyzed slots and point thresholds up to five', function () {
+    $scenario = MatchScenario::fromInput('25:12, 25:14, 25:13', 'Łatwe 3:0');
+    $middleA = Player::factory()->make(['id' => 40, 'position' => PlayerPosition::MiddleBlocker, 'training_bar' => 0]);
+    $middleB = Player::factory()->make(['id' => 41, 'position' => PlayerPosition::MiddleBlocker, 'training_bar' => 5]);
+    $middleC = Player::factory()->make(['id' => 42, 'position' => PlayerPosition::MiddleBlocker, 'training_bar' => 10]);
+    $oppositeA = Player::factory()->make(['id' => 43, 'position' => PlayerPosition::Opposite, 'training_bar' => 0]);
+    $oppositeB = Player::factory()->make(['id' => 44, 'position' => PlayerPosition::Opposite, 'training_bar' => 5]);
+
+    $plans = (new SubstitutionPlanGenerator)->generateGreedy([
+        ['slot_number' => 1, 'position' => PlayerPosition::MiddleBlocker, 'players' => [$middleA, $middleB, $middleC]],
+        ['slot_number' => 2, 'position' => PlayerPosition::MiddleBlocker, 'players' => [$middleA, $middleB, $middleC]],
+        ['slot_number' => 3, 'position' => PlayerPosition::Opposite, 'players' => [$oppositeA, $oppositeB]],
+    ], $scenario);
+
+    $thresholds = collect($plans)
+        ->flatMap(fn (array $plan): array => $plan['slots'])
+        ->flatMap(fn (array $slot): array => $slot['sets'])
+        ->pluck('point_threshold')
+        ->filter();
+
+    expect($plans)->not->toBeEmpty()
+        ->and($plans[0]['slots'])->toHaveCount(3)
+        ->and($thresholds->every(fn (int $threshold): bool => $threshold >= 1 && $threshold <= 5))->toBeTrue();
+});
