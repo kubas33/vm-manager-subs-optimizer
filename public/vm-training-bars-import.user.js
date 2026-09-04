@@ -1,10 +1,11 @@
 // ==UserScript==
 // @name         VM Training Bars Import
 // @namespace    vm-manager-subs-optimizer
-// @version      0.3.0
-// @description  Manually imports VM training bar percentages into the local optimizer app.
+// @version      0.4.0
+// @description  Imports VM players and training bar percentages into the local optimizer app.
 // @match        *://*.vm-manager.org/*
 // @grant        GM_xmlhttpRequest
+// @run-at       document-start
 // @connect      localhost
 // @connect      127.0.0.1
 // ==/UserScript==
@@ -50,6 +51,54 @@
             .trim();
     }
 
+    function normalizePosition(position) {
+        const positions = {
+            A: 'opposite',
+            L: 'libero',
+            P: 'outside_hitter',
+            R: 'setter',
+            S: 'middle_blocker',
+        };
+
+        if (typeof position !== 'string') {
+            return null;
+        }
+
+        const normalizedPosition = position.trim().toUpperCase();
+
+        return positions[normalizedPosition] || position.trim();
+    }
+
+    function normalizeBoolean(value) {
+        if (typeof value === 'boolean') {
+            return value;
+        }
+
+        return ['1', 'true', 'yes', 'on'].includes(String(value).trim().toLowerCase());
+    }
+
+    function normalizeApiPlayer(player) {
+        const playerId = Number(player.playerId ?? player.vm_player_id);
+        const surname = typeof player.name === 'string' ? player.name.trim() : '';
+        const firstName = typeof player.fstName === 'string' ? player.fstName.trim() : '';
+        const displayName = surname && firstName && !surname.includes(',')
+            ? `${surname}, ${firstName}`
+            : surname || firstName;
+        const trainingBar = Number(player.trainingPoints ?? player.training_bar);
+
+        if (!Number.isInteger(playerId) || playerId < 1 || !Number.isInteger(trainingBar) || trainingBar < 0 || trainingBar > 100) {
+            return null;
+        }
+
+        return {
+            vm_player_id: playerId,
+            name: normalizeName(displayName),
+            position: normalizePosition(player.pozycja ?? player.position),
+            training_bar: trainingBar,
+            is_injured: normalizeBoolean(player.isInjured ?? player.is_injured),
+        };
+    }
+
     function extractPlayers(root) {
         const playerLinks = Array.from(root.querySelectorAll('span.small_link[onclick], span.small_link[OnClick]'));
 
@@ -80,6 +129,18 @@
     }
 
     function parsePlayers(responseText) {
+        try {
+            const parsed = JSON.parse(responseText);
+
+            if (Array.isArray(parsed.players)) {
+                return parsed.players
+                    .map(normalizeApiPlayer)
+                    .filter((player) => player !== null);
+            }
+        } catch (error) {
+            // Fall back to the HTML response used by older VM pages.
+        }
+
         if (! responseText.includes('trening_options') || ! responseText.includes('trening_option_')) {
             return [];
         }
@@ -97,6 +158,17 @@
         }
 
         return extractPlayers(form);
+    }
+
+    function mergePlayersWithDom(domPlayers) {
+        const responsePlayersById = new Map(
+            lastParsedPlayers.map((player) => [player.vm_player_id, player]),
+        );
+
+        return domPlayers.map((domPlayer) => ({
+            ...responsePlayersById.get(domPlayer.vm_player_id),
+            ...domPlayer,
+        }));
     }
 
     function setStatus(message, tone = 'info') {
@@ -194,7 +266,7 @@
 
         const domPlayers = parsePlayersFromDom();
         const players = domPlayers.length > 0
-            ? domPlayers
+            ? mergePlayersWithDom(domPlayers)
             : lastParsedPlayers.length > 0
                 ? lastParsedPlayers
                 : parsePlayers(lastTrainingResponseText || document.documentElement.innerHTML);
@@ -212,16 +284,18 @@
             const result = await sendPlayers(players);
             const warnings = Array.isArray(result.warnings) ? result.warnings : [];
 
+            const created = Number(result.created || 0);
+
             if (warnings.length > 0) {
                 const names = warnings
                     .map((warning) => warning.name || warning.vm_player_id)
                     .slice(0, 5)
                     .join(', ');
 
-                setStatus(`Zaktualizowano: ${result.updated}. Ostrzeżenia: ${warnings.length} (${names}).`, 'warning');
+                setStatus(`Zaktualizowano: ${result.updated}, utworzono: ${created}. Ostrzeżenia: ${warnings.length} (${names}).`, 'warning');
                 console.warn('VM training import warnings.', warnings);
             } else {
-                setStatus(`Import zakończony. Zaktualizowano: ${result.updated}.`, 'success');
+                setStatus(`Import zakończony. Zaktualizowano: ${result.updated}, utworzono: ${created}.`, 'success');
             }
         } catch (error) {
             setStatus(error.message, 'error');
@@ -308,7 +382,7 @@
 
         const domPlayers = parsePlayersFromDom();
 
-        if (domPlayers.length > 0) {
+        if (domPlayers.length > 0 && lastParsedPlayers.length === 0) {
             lastParsedPlayers = domPlayers;
         }
 

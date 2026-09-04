@@ -3,6 +3,8 @@
 use App\Enums\PlayerPosition;
 use App\Models\Player;
 use App\Models\User;
+use Illuminate\Http\Client\Request;
+use Illuminate\Support\Facades\Http;
 use Livewire\Livewire;
 
 test('players page shows seeded players for authenticated users', function () {
@@ -14,7 +16,80 @@ test('players page shows seeded players for authenticated users', function () {
 
     $this->get(route('players.index'))
         ->assertOk()
-        ->assertSee('Jan Testowy');
+        ->assertSee('Jan Testowy')
+        ->assertSee('Importuj z VM');
+});
+
+test('players page shows injury status', function () {
+    $this->actingAs(User::factory()->create());
+
+    Player::factory()->create([
+        'name' => 'Kontuzjowany zawodnik',
+        'is_injured' => true,
+    ]);
+
+    $this->get(route('players.index'))
+        ->assertOk()
+        ->assertSee('Kontuzjowany');
+});
+
+test('players page imports training bars and creates missing players from VM Manager', function () {
+    $this->actingAs(User::factory()->create());
+
+    config()->set('services.vm_training_import.url', 'https://faster.vm-manager.org/api/training');
+    config()->set('services.vm_training_import.api_token', 'remote-api-token');
+
+    Http::fake([
+        'https://faster.vm-manager.org/api/training' => Http::response([
+            'players' => [
+                [
+                    'playerId' => 2060721,
+                    'name' => 'Manso',
+                    'fstName' => 'Armindo',
+                    'pozycja' => 'A',
+                    'trainingPoints' => 42,
+                    'isInjured' => true,
+                ],
+                [
+                    'playerId' => 2004528,
+                    'name' => 'Kwiatek',
+                    'fstName' => 'Kacper',
+                    'pozycja' => 'S',
+                    'trainingPoints' => 1,
+                ],
+            ],
+        ]),
+    ]);
+
+    $existingPlayer = Player::factory()->withVmPlayerId(2060721)->create([
+        'name' => 'Manso, Armindo',
+        'training_bar' => 6,
+        'position' => PlayerPosition::Setter,
+    ]);
+
+    Livewire::test('pages::players.index')
+        ->call('importTrainingBars')
+        ->assertHasNoErrors()
+        ->assertSee('zaktualizowano 1, utworzono 1');
+
+    Http::assertSent(function (Request $request): bool {
+        return $request->url() === 'https://faster.vm-manager.org/api/training'
+            && $request->header('Authorization') === ['Bearer remote-api-token'];
+    });
+
+    expect($existingPlayer->fresh())
+        ->training_bar->toBe(42)
+        ->is_injured->toBeTrue()
+        ->position->toBe(PlayerPosition::Setter);
+
+    $this->assertDatabaseHas('players', [
+        'vm_player_id' => 2004528,
+        'name' => 'Kwiatek, Kacper',
+        'position' => PlayerPosition::MiddleBlocker->value,
+        'training_bar' => 1,
+        'is_injured' => false,
+        'active' => true,
+    ]);
 });
 
 test('players page renders position filter option only once', function () {

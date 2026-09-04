@@ -9,13 +9,29 @@ test('player attributes are cast to domain types', function () {
         'position' => PlayerPosition::MiddleBlocker,
         'training_bar' => 68,
         'active' => false,
+        'is_injured' => true,
     ]);
 
     expect($player->fresh())
         ->vm_player_id->toBe(2060721)
         ->position->toBe(PlayerPosition::MiddleBlocker)
         ->training_bar->toBe(68)
-        ->active->toBeFalse();
+        ->active->toBeFalse()
+        ->is_injured->toBeTrue()
+        ->isInjured->toBeTrue();
+});
+
+test('available scope excludes inactive and injured players', function () {
+    $availablePlayer = Player::factory()->create();
+    $injuredPlayer = Player::factory()->create(['is_injured' => true]);
+    $inactivePlayer = Player::factory()->inactive()->create();
+
+    $playerIds = Player::query()->available()->pluck('id');
+
+    expect($playerIds)
+        ->toContain($availablePlayer->id)
+        ->not->toContain($injuredPlayer->id)
+        ->not->toContain($inactivePlayer->id);
 });
 
 test('player exposes training bar helper methods for optimization', function () {

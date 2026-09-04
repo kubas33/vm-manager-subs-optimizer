@@ -24,6 +24,7 @@ class PlayerFactory extends Factory
             'position' => fake()->randomElement(PlayerPosition::cases()),
             'training_bar' => fake()->numberBetween(0, 100),
             'active' => true,
+            'is_injured' => false,
         ];
     }
 

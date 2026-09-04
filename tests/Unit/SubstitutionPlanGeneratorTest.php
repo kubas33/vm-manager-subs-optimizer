@@ -75,6 +75,48 @@ test('substitution plan generator returns no plans when there are too few player
     expect($plans)->toBe([]);
 });
 
+test('substitution plan generator excludes injured players from candidates', function () {
+    $scenario = MatchScenario::fromInput('25:20, 25:18, 25:22', 'Standardowe 3:0');
+
+    $injuredSetter = Player::factory()->make([
+        'id' => 25,
+        'name' => 'Injured Setter',
+        'position' => PlayerPosition::Setter,
+        'training_bar' => 0,
+        'is_injured' => true,
+    ]);
+    $healthySetter = Player::factory()->make([
+        'id' => 26,
+        'name' => 'Healthy Setter',
+        'position' => PlayerPosition::Setter,
+        'training_bar' => 20,
+    ]);
+    $opposite = Player::factory()->make([
+        'id' => 27,
+        'name' => 'Healthy Opposite',
+        'position' => PlayerPosition::Opposite,
+    ]);
+
+    $plans = (new SubstitutionPlanGenerator)->generate([
+        ['slot_number' => 1, 'position' => PlayerPosition::Setter, 'players' => [$injuredSetter, $healthySetter]],
+        ['slot_number' => 2, 'position' => PlayerPosition::Opposite, 'players' => [$opposite]],
+    ], $scenario);
+
+    expect($plans)->not->toBeEmpty();
+
+    foreach ($plans as $plan) {
+        expect(collect($plan['slots'])
+            ->flatMap(fn (array $slot): array => [
+                $slot['starter']['id'],
+                ...collect($slot['sets'])->flatMap(fn (array $set): array => [
+                    $set['starter_player']['id'],
+                    $set['active_player']['id'],
+                ])->all(),
+            ])
+            ->all())->not->toContain($injuredSetter->id);
+    }
+});
+
 test('substitution plan generator rejects more than three analyzed slots', function () {
     $scenario = MatchScenario::fromInput('25:20, 25:18, 25:22', 'Standardowe 3:0');
 

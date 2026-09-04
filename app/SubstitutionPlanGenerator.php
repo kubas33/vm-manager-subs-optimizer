@@ -30,8 +30,8 @@ final class SubstitutionPlanGenerator
      */
     public function generate(array $slotDefinitions, MatchScenario $scenario): array
     {
-        if (count($slotDefinitions) !== 2) {
-            throw new InvalidArgumentException('Generator oczekuje dokładnie dwóch analizowanych slotów.');
+        if (count($slotDefinitions) < 1 || count($slotDefinitions) > 3) {
+            throw new InvalidArgumentException('Generator oczekuje od jednego do trzech analizowanych slotów.');
         }
 
         $normalizedSlots = collect($slotDefinitions)
@@ -88,8 +88,8 @@ final class SubstitutionPlanGenerator
      */
     public function generateGreedy(array $slotDefinitions, MatchScenario $scenario): array
     {
-        if (count($slotDefinitions) !== 2) {
-            throw new InvalidArgumentException('Generator oczekuje dokładnie dwóch analizowanych slotów.');
+        if (count($slotDefinitions) < 1 || count($slotDefinitions) > 3) {
+            throw new InvalidArgumentException('Generator oczekuje od jednego do trzech analizowanych slotów.');
         }
 
         $this->debugGenerator('optimizer.greedy.start', [
@@ -675,6 +675,7 @@ final class SubstitutionPlanGenerator
     protected function uniquePlayers(array $players): array
     {
         return collect($players)
+            ->reject(fn (Player $player): bool => $player->isInjured)
             ->unique(fn (Player $player): int => $player->id)
             ->values()
             ->all();

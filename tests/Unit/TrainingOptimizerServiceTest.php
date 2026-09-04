@@ -101,6 +101,40 @@ test('training optimizer service limits candidate pool separately for different 
     expect($setterNames)->not->toContain('Setter D');
 });
 
+test('training optimizer service excludes injured players from candidate pools', function () {
+    $scenario = MatchScenario::fromInput('25:20, 25:18, 25:22', 'Standardowe 3:0');
+
+    $injuredSetter = Player::factory()->make([
+        'id' => 36,
+        'name' => 'Injured Setter',
+        'position' => PlayerPosition::Setter,
+        'training_bar' => 0,
+        'is_injured' => true,
+    ]);
+    $healthySetter = Player::factory()->make([
+        'id' => 37,
+        'name' => 'Healthy Setter',
+        'position' => PlayerPosition::Setter,
+        'training_bar' => 20,
+    ]);
+    $opposite = Player::factory()->make([
+        'id' => 38,
+        'name' => 'Healthy Opposite',
+        'position' => PlayerPosition::Opposite,
+    ]);
+
+    $rankedPlans = (new TrainingOptimizerService(
+        new TrainingGainCalculator,
+        new SubstitutionPlanGenerator,
+    ))->optimize([
+        ['slot_number' => 1, 'position' => PlayerPosition::Setter, 'reserve_limit' => 1, 'players' => [$injuredSetter, $healthySetter]],
+        ['slot_number' => 2, 'position' => PlayerPosition::Opposite, 'reserve_limit' => 0, 'players' => [$opposite]],
+    ], $scenario, 1);
+
+    expect($rankedPlans)->not->toBeEmpty()
+        ->and(collect($rankedPlans[0]['player_results'])->pluck('name'))->not->toContain('Injured Setter');
+});
+
 test('training optimizer service uses shared reserve pool for duplicate positions and keeps lowest bars', function () {
     $scenario = MatchScenario::fromInput('25:20, 25:18, 25:22', 'Standardowe 3:0');
 

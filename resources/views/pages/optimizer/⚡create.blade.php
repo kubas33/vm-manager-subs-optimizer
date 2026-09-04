@@ -15,6 +15,8 @@ new #[Title('Optymalizacja')] class extends Component
 {
     public string $primaryPosition = '';
     public string $secondaryPosition = '';
+    public string $tertiaryPosition = '';
+    public bool $hasThirdSlot = false;
     public string $scenarioMode = 'preset';
     public string $presetKey = 'standard_3_0';
     public string $singleScenario = '25:20, 25:18, 25:22';
@@ -42,7 +44,7 @@ new #[Title('Optymalizacja')] class extends Component
     #[Computed]
     public function activePlayersCount(): int
     {
-        return Player::query()->active()->count();
+        return Player::query()->available()->count();
     }
 
     /**
@@ -103,7 +105,7 @@ new #[Title('Optymalizacja')] class extends Component
     #[Computed]
     public function selectedPositionSummaries(): array
     {
-        $positions = collect([$this->primaryPosition, $this->secondaryPosition])
+        $positions = collect($this->selectedPositions())
             ->filter()
             ->values();
 
@@ -112,7 +114,7 @@ new #[Title('Optymalizacja')] class extends Component
         }
 
         $counts = Player::query()
-            ->active()
+            ->available()
             ->whereIn('position', $positions->all())
             ->selectRaw('position, count(*) as aggregate')
             ->groupBy('position')
@@ -181,6 +183,30 @@ new #[Title('Optymalizacja')] class extends Component
         $this->resetValidation();
     }
 
+    public function updatedTertiaryPosition(): void
+    {
+        $this->syncReserveLimitState();
+        $this->resetValidation();
+    }
+
+    public function addThirdSlot(): void
+    {
+        $this->hasThirdSlot = true;
+        $this->tertiaryPosition = $this->tertiaryPosition !== ''
+            ? $this->tertiaryPosition
+            : PlayerPosition::Opposite->value;
+        $this->syncReserveLimitState();
+        $this->resetValidation();
+    }
+
+    public function removeThirdSlot(): void
+    {
+        $this->hasThirdSlot = false;
+        $this->tertiaryPosition = '';
+        $this->syncReserveLimitState();
+        $this->resetValidation();
+    }
+
     /**
      * @return array<int, array{position: string, position_label: string, slot_count: int, reserve_limit: int, candidate_limit: int}>
      */
@@ -217,6 +243,11 @@ new #[Title('Optymalizacja')] class extends Component
             $draft['secondaryPosition'] ?? null,
             $this->secondaryPosition,
         );
+
+        $this->hasThirdSlot = $this->restoreBoolean($draft['hasThirdSlot'] ?? false, false);
+        $this->tertiaryPosition = $this->hasThirdSlot
+            ? $this->restorePosition($draft['tertiaryPosition'] ?? null, PlayerPosition::Opposite->value)
+            : '';
 
         $this->scenarioMode = $this->restoreScenarioMode(
             $draft['scenarioMode'] ?? null,
@@ -385,6 +416,10 @@ new #[Title('Optymalizacja')] class extends Component
         $rules = [
             'primaryPosition' => ['required', Rule::enum(PlayerPosition::class)],
             'secondaryPosition' => ['required', Rule::enum(PlayerPosition::class)],
+            'tertiaryPosition' => $this->hasThirdSlot
+                ? ['required', Rule::enum(PlayerPosition::class)]
+                : ['nullable'],
+            'hasThirdSlot' => ['boolean'],
             'scenarioMode' => ['required', Rule::in(array_keys($this->scenarioModes()))],
             'presetKey' => [Rule::requiredIf($this->scenarioMode === 'preset'), Rule::in(array_keys($this->presetOptions()))],
             'singleScenario' => [Rule::requiredIf($this->scenarioMode === 'single'), 'string'],
@@ -416,6 +451,8 @@ new #[Title('Optymalizacja')] class extends Component
             'primaryPosition.enum' => 'Pierwsza pozycja jest nieprawidłowa.',
             'secondaryPosition.required' => 'Wybierz drugą pozycję do analizy.',
             'secondaryPosition.enum' => 'Druga pozycja jest nieprawidłowa.',
+            'tertiaryPosition.required' => 'Wybierz trzecią pozycję do analizy.',
+            'tertiaryPosition.enum' => 'Trzecia pozycja jest nieprawidłowa.',
             'scenarioMode.required' => 'Wybierz tryb scenariusza.',
             'scenarioMode.in' => 'Wybrany tryb scenariusza jest nieprawidłowy.',
             'presetKey.required' => 'Wybierz preset scenariusza.',
@@ -452,7 +489,7 @@ new #[Title('Optymalizacja')] class extends Component
                 if ($sum > 5) {
                     $validator->errors()->add(
                         'reserveLimitsByPosition',
-                        'Suma rezerwowych dla dwóch różnych pozycji nie może przekroczyć 5.',
+                        'Suma rezerwowych dla wybranych pozycji nie może przekroczyć 5.',
                     );
                 }
             });
@@ -506,14 +543,15 @@ new #[Title('Optymalizacja')] class extends Component
      */
     protected function normalizePositions(array $validated): array
     {
+        $positions = $this->selectedPositions($validated);
         $counts = Player::query()
             ->active()
-            ->whereIn('position', [$validated['primaryPosition'], $validated['secondaryPosition']])
+            ->whereIn('position', $positions)
             ->selectRaw('position, count(*) as aggregate')
             ->groupBy('position')
             ->pluck('aggregate', 'position');
 
-        return collect([$validated['primaryPosition'], $validated['secondaryPosition']])
+        return collect($positions)
             ->map(fn (string $value) => [
                 'value' => $value,
                 'label' => PlayerPosition::from($value)->label(),
@@ -528,7 +566,7 @@ new #[Title('Optymalizacja')] class extends Component
      */
     protected function normalizeReservePools(array $validated): array
     {
-        $slotCounts = collect([$validated['primaryPosition'], $validated['secondaryPosition']])
+        $slotCounts = collect($this->selectedPositions($validated))
             ->countBy();
 
         return $slotCounts
@@ -557,9 +595,7 @@ new #[Title('Optymalizacja')] class extends Component
     {
         try {
             return match ($validated['scenarioMode']) {
-                'preset' => ($validated['scenarioSafetyMode'] ?? false)
-                    ? $this->safePresetScenarioSet((string) $validated['presetKey'])
-                    : ScenarioSet::single($this->presetScenario((string) $validated['presetKey'])),
+                'preset' => $this->presetScenarioSet((string) $validated['presetKey']),
                 'single' => ScenarioSet::single(MatchScenario::fromInput((string) $validated['singleScenario'], 'Scenariusz ręczny')),
                 'multiple' => $this->multipleScenarioSet((string) $validated['multipleScenarios']),
                 default => $this->throwScenarioValidation('scenarioMode', 'Wybrany tryb scenariusza jest nieprawidłowy.'),
@@ -588,22 +624,29 @@ new #[Title('Optymalizacja')] class extends Component
         return MatchScenario::fromInput($preset['scenario'], $preset['label']);
     }
 
-    protected function safePresetScenarioSet(string $presetKey): ScenarioSet
+    protected function presetScenarioSet(string $presetKey): ScenarioSet
     {
-        $safePresetKeys = match ($presetKey) {
+        $scenarios = match ($presetKey) {
             'easy_3_0' => ['easy_3_0'],
-            'standard_3_0' => ['standard_3_0'],
-            'standard_3_1' => ['standard_3_0', 'standard_3_1'],
-            'hard_3_2' => ['standard_3_0', 'standard_3_1', 'hard_3_2'],
+            'standard_3_0', 'standard_3_1' => ['standard_3_0', 'standard_3_1', 'standard_3_2'],
+            'hard_3_2' => ['hard_3_1', 'hard_3_2'],
             default => [$presetKey],
         };
 
         return new ScenarioSet(array_map(
             fn (string $key): MatchScenario => MatchScenario::fromInput(
-                $this->presetOptions()[$key]['scenario'],
-                $this->presetOptions()[$key]['label'],
+                match ($key) {
+                    'standard_3_2' => '25:23, 22:25, 25:21, 20:25, 15:12',
+                    'hard_3_1' => '27:25, 23:25, 26:24, 25:23',
+                    default => $this->presetOptions()[$key]['scenario'],
+                },
+                match ($key) {
+                    'standard_3_2' => 'Standardowe 3:2',
+                    'hard_3_1' => 'Trudne 3:1',
+                    default => $this->presetOptions()[$key]['label'],
+                },
             ),
-            $safePresetKeys,
+            $scenarios,
         ));
     }
 
@@ -648,6 +691,8 @@ new #[Title('Optymalizacja')] class extends Component
         return [
             'primaryPosition' => $this->primaryPosition,
             'secondaryPosition' => $this->secondaryPosition,
+            'tertiaryPosition' => $this->tertiaryPosition,
+            'hasThirdSlot' => $this->hasThirdSlot,
             'scenarioMode' => $this->scenarioMode,
             'presetKey' => $this->presetKey,
             'singleScenario' => $this->singleScenario,
@@ -661,7 +706,7 @@ new #[Title('Optymalizacja')] class extends Component
 
     public function usesSharedReservePool(): bool
     {
-        return $this->primaryPosition !== '' && $this->primaryPosition === $this->secondaryPosition;
+        return count($this->distinctSelectedPositions()) === 1;
     }
 
     protected function syncScenarioSafetyMode(): void
@@ -685,11 +730,29 @@ new #[Title('Optymalizacja')] class extends Component
      */
     public function distinctSelectedPositions(): array
     {
-        return collect([$this->primaryPosition, $this->secondaryPosition])
+        return collect($this->selectedPositions())
             ->filter()
             ->unique()
             ->values()
             ->all();
+    }
+
+    /**
+     * @param  array<string, mixed>|null  $values
+     * @return array<int, string>
+     */
+    protected function selectedPositions(?array $values = null): array
+    {
+        $positions = [
+            (string) ($values['primaryPosition'] ?? $this->primaryPosition),
+            (string) ($values['secondaryPosition'] ?? $this->secondaryPosition),
+        ];
+
+        if ((bool) ($values['hasThirdSlot'] ?? $this->hasThirdSlot)) {
+            $positions[] = (string) ($values['tertiaryPosition'] ?? $this->tertiaryPosition);
+        }
+
+        return $positions;
     }
 
     protected function syncReserveLimitState(): void
@@ -752,7 +815,7 @@ new #[Title('Optymalizacja')] class extends Component
         <div class="space-y-2">
             <flux:heading size="xl" level="1">Optymalizacja składu</flux:heading>
             <flux:text class="max-w-2xl text-zinc-600 dark:text-zinc-300">
-                Wybierz dwie pozycje, tryb scenariusza i przebieg meczu. Ten etap zapisuje gotowe wejście pod przyszły silnik obliczeniowy i prowadzi do podsumowania wyniku.
+                Wybierz od dwóch do trzech pozycji, tryb scenariusza i przebieg meczu.
             </flux:text>
         </div>
 
@@ -771,9 +834,9 @@ new #[Title('Optymalizacja')] class extends Component
             <form wire:submit="submit" class="mt-6 space-y-8">
                 <div class="space-y-4">
                     <div>
-                        <flux:heading size="base">Dwie pozycje do analizy</flux:heading>
+                        <flux:heading size="base">Pozycje do analizy</flux:heading>
                         <flux:text class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
-                            W MVP analizujemy dokładnie dwa sloty boiskowe. Oba mogą wskazywać tę samą pozycję, np. dwóch środkowych.
+                            Analizujemy dwa lub trzy sloty boiskowe. Sloty mogą wskazywać tę samą pozycję, np. dwóch środkowych.
                         </flux:text>
                     </div>
 
@@ -799,6 +862,27 @@ new #[Title('Optymalizacja')] class extends Component
                                 <flux:text class="mt-2 text-sm text-rose-600 dark:text-rose-400">{{ $message }}</flux:text>
                             @enderror
                         </div>
+
+                        @if ($hasThirdSlot)
+                            <div>
+                                <flux:select wire:model.live="tertiaryPosition" label="Pozycja 3">
+                                    @foreach ($this->positionOptions as $value => $label)
+                                        <option value="{{ $value }}">{{ $label }}</option>
+                                    @endforeach
+                                </flux:select>
+                                @error('tertiaryPosition')
+                                    <flux:text class="mt-2 text-sm text-rose-600 dark:text-rose-400">{{ $message }}</flux:text>
+                                @enderror
+                            </div>
+                        @endif
+                    </div>
+
+                    <div class="flex gap-3">
+                        @if ($hasThirdSlot)
+                            <flux:button type="button" variant="ghost" wire:click="removeThirdSlot">Usuń trzeci slot</flux:button>
+                        @else
+                            <flux:button type="button" variant="ghost" wire:click="addThirdSlot">Dodaj trzeci slot</flux:button>
+                        @endif
                     </div>
                 </div>
 
@@ -830,7 +914,7 @@ new #[Title('Optymalizacja')] class extends Component
                     <div>
                         <flux:heading size="base">Pula rezerwowych</flux:heading>
                         <flux:text class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
-                            Dla dwóch takich samych pozycji ustawiasz jedną wspólną pulę. Dla dwóch różnych pozycji ustawiasz osobne limity, a ich suma nie może przekroczyć 5.
+                            Dla jednakowych pozycji ustawiasz jedną wspólną pulę. Dla różnych pozycji ustawiasz osobne limity, a ich suma nie może przekroczyć 5.
                         </flux:text>
                     </div>
 
@@ -914,31 +998,6 @@ new #[Title('Optymalizacja')] class extends Component
 
                 @if ($scenarioMode === 'preset')
                     <div class="space-y-4">
-                        <div class="rounded-2xl border border-zinc-200 bg-zinc-50/70 p-4 dark:border-zinc-700 dark:bg-zinc-800/60">
-                            <div class="flex flex-wrap items-start justify-between gap-3">
-                                <div class="space-y-1">
-                                    <flux:text class="font-medium text-zinc-950 dark:text-zinc-50">Tryb bezpieczny</flux:text>
-                                    <flux:text class="text-sm text-zinc-600 dark:text-zinc-300">
-                                        Dla presetów uwzględnia krótsze scenariusze i wybiera wariant odporny na wcześniejsze zakończenie meczu.
-                                    </flux:text>
-                                </div>
-
-                                @if ($this->defaultScenarioSafetyModeForPreset($presetKey))
-                                    <flux:badge color="emerald">domyślnie włączony</flux:badge>
-                                @else
-                                    <flux:badge color="sky">opcjonalny</flux:badge>
-                                @endif
-                            </div>
-
-                            <div class="mt-4">
-                                <flux:switch
-                                    wire:model.live="scenarioSafetyMode"
-                                    label="Włącz tryb bezpieczny"
-                                    description="Przy 3:1 i 3:2 włącza się automatycznie."
-                                />
-                            </div>
-                        </div>
-
                         <flux:select wire:model.live="presetKey" label="Preset scenariusza">
                             @foreach ($this->presetOptions as $value => $preset)
                                 <option value="{{ $value }}">{{ $preset['label'] }}</option>

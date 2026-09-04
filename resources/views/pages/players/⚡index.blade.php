@@ -2,6 +2,7 @@
 
 use App\Enums\PlayerPosition;
 use App\Models\Player;
+use App\TrainingBarImportService;
 use Illuminate\Validation\Rule;
 use Livewire\Attributes\Computed;
 use Livewire\Attributes\Title;
@@ -25,6 +26,8 @@ new #[Title('Zawodnicy')] class extends Component
     public ?int $playerIdPendingDeletion = null;
 
     public string $playerNamePendingDeletion = '';
+
+    public string $importStatus = '';
 
     #[Computed]
     public function players()
@@ -77,6 +80,31 @@ new #[Title('Zawodnicy')] class extends Component
     public function mount(): void
     {
         $this->position = PlayerPosition::Setter->value;
+    }
+
+    public function importTrainingBars(): void
+    {
+        $this->resetValidation('import');
+
+        try {
+            $result = app(TrainingBarImportService::class)->importFromVmManager();
+        } catch (Throwable $exception) {
+            report($exception);
+            $this->importStatus = '';
+            $this->addError('import', 'Nie udało się pobrać danych z VM. Sprawdź konfigurację adresu i tokenu importu.');
+
+            return;
+        }
+
+        $warnings = count($result['warnings']);
+        $this->importStatus = sprintf(
+            'Import zakończony: zaktualizowano %d, utworzono %d%s.',
+            $result['updated'],
+            $result['created'],
+            $warnings > 0 ? "; pominięto {$warnings}" : '',
+        );
+
+        unset($this->players, $this->activePlayersCount, $this->totalPlayersCount, $this->averageTrainingBar);
     }
 
     public function savePlayer(): void
@@ -233,13 +261,29 @@ new #[Title('Zawodnicy')] class extends Component
             </flux:text>
         </div>
 
-        <div class="flex items-center gap-3">
+        <div class="flex flex-wrap items-center justify-end gap-3">
             <flux:badge color="emerald">{{ $this->activePlayersCount }} aktywnych</flux:badge>
+            <flux:button variant="primary" icon="arrow-down-tray" wire:click="importTrainingBars" wire:loading.attr="disabled" wire:target="importTrainingBars">
+                <span wire:loading.remove wire:target="importTrainingBars">Importuj z VM</span>
+                <span wire:loading wire:target="importTrainingBars">Importowanie...</span>
+            </flux:button>
             <flux:button variant="ghost" :href="route('optimizer.create')" wire:navigate>
                 Przejdź do optymalizacji
             </flux:button>
         </div>
     </section>
+
+    @if ($errors->has('import'))
+        <flux:callout icon="exclamation-triangle" color="rose">
+            <flux:callout.heading>Import nieudany</flux:callout.heading>
+            <flux:callout.text>{{ $errors->first('import') }}</flux:callout.text>
+        </flux:callout>
+    @elseif ($importStatus !== '')
+        <flux:callout icon="check-circle" color="emerald">
+            <flux:callout.heading>Import zawodników</flux:callout.heading>
+            <flux:callout.text>{{ $importStatus }}</flux:callout.text>
+        </flux:callout>
+    @endif
 
     <section class="grid gap-4 md:grid-cols-3">
         <div class="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
@@ -364,9 +408,14 @@ new #[Title('Zawodnicy')] class extends Component
                                 </div>
                             </div>
                             <div>
-                                <flux:badge :color="$player->active ? 'emerald' : 'amber'">
-                                    {{ $player->active ? 'aktywny' : 'nieaktywny' }}
-                                </flux:badge>
+                                <div class="flex flex-wrap items-center gap-2">
+                                    @if ($player->isInjured)
+                                        <flux:badge color="rose">Kontuzjowany</flux:badge>
+                                    @endif
+                                    <flux:badge :color="$player->active ? 'emerald' : 'amber'">
+                                        {{ $player->active ? 'aktywny' : 'nieaktywny' }}
+                                    </flux:badge>
+                                </div>
                             </div>
                             <div class="flex flex-wrap justify-start gap-2 md:justify-end">
                                 <flux:button variant="ghost" wire:click="editPlayer({{ $player->id }})">

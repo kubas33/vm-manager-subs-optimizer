@@ -353,7 +353,7 @@ test('optimizer form defaults safe mode for longer presets', function () {
         ->assertSet('scenarioSafetyMode', true);
 });
 
-test('optimizer safe mode for standard three nil includes dropped set scenarios', function () {
+test('standard match builds independent rankings for three nil three one and three two', function () {
     $this->actingAs(User::factory()->create());
 
     foreach (range(1, 7) as $index) {
@@ -379,71 +379,42 @@ test('optimizer safe mode for standard three nil includes dropped set scenarios'
         ->and(collect(session('optimizer.input.scenarios'))->pluck('label')->all())->toBe([
             'Standardowe 3:0',
             'Standardowe 3:1',
-            'Trudne 3:2',
+            'Standardowe 3:2',
         ])
         ->and(collect(session('optimizer.input.scenarios'))->pluck('sets_count')->all())->toBe([3, 4, 5]);
 
-    $bestPlan = Livewire::test('pages::optimizer.result')
-        ->get('rankedPlans')[0];
+    $scenarioRankings = Livewire::test('pages::optimizer.result')->get('scenarioRankings');
 
-    $maximumPlannedSet = collect($bestPlan['plan']['slots'])
-        ->flatMap(fn (array $slot): array => $slot['sets'])
-        ->max('set_number');
-
-    $maximumPlannedSetByScenario = collect($bestPlan['scenario_results'])
-        ->mapWithKeys(fn (array $scenarioResult): array => [
-            $scenarioResult['label'] => collect($scenarioResult['plan']['slots'])
-                ->flatMap(fn (array $slot): array => $slot['sets'])
-                ->max('set_number'),
+    expect($scenarioRankings)->toHaveCount(3)
+        ->and(collect($scenarioRankings)->pluck('label')->all())->toBe([
+            'Standardowe 3:0',
+            'Standardowe 3:1',
+            'Standardowe 3:2',
         ])
-        ->all();
+        ->and(collect($scenarioRankings)->pluck('sets_count')->all())->toBe([3, 4, 5]);
 
-    expect($maximumPlannedSet)->toBe(5)
-        ->and($maximumPlannedSetByScenario)->toBe([
-            'Standardowe 3:0' => 3,
-            'Standardowe 3:1' => 4,
-            'Trudne 3:2' => 5,
-        ]);
-
-    $resultComponent = Livewire::test('pages::optimizer.result')
-        ->call('selectScenario', 0);
-
-    $benchPlayers = $resultComponent->instance()->benchPlayers($bestPlan['plan']);
-
-    expect($resultComponent->get('selectedScenarioResult')['label'])->toBe('Standardowe 3:0')
-        ->and(collect($resultComponent->get('selectedScenarioResult')['plan']['slots'])
-            ->flatMap(fn (array $slot): array => $slot['sets'])
-            ->max('set_number'))->toBe(3)
-        ->and($benchPlayers)->not->toBeEmpty()
-        ->and(collect($benchPlayers)->flatMap(fn (array $benchPlayer): array => $benchPlayer['sets'])->max())->toBe(5);
-
-    $resultComponent
-        ->call('selectScenario', 2)
-        ->call('selectPlan', 1);
-
-    $selectedPlan = $resultComponent->get('selectedPlan');
-    $selectedPlanStarterIds = collect($selectedPlan['plan']['slots'])
-        ->pluck('starter.id')
-        ->sort()
-        ->values()
-        ->all();
-    $selectedPlanBenchIds = collect($resultComponent->instance()->benchPlayers($selectedPlan['plan']))
-        ->pluck('id')
-        ->sort()
-        ->values()
-        ->all();
-    $selectedLineupIds = collect($resultComponent->get('lineupRecommendations')['recommendations'][0]['slots'])
-        ->pluck('player.id')
-        ->filter()
-        ->sort()
-        ->values()
-        ->all();
-
-    expect($resultComponent->get('selectedPlanNumber'))->toBe(2)
-        ->and($resultComponent->get('selectedScenarioResult')['is_worst_case'])->toBeTrue()
-        ->and($selectedLineupIds)->toContain(...$selectedPlanStarterIds)
-        ->and(array_intersect($selectedLineupIds, $selectedPlanBenchIds))->toBeEmpty();
+    foreach ($scenarioRankings as $scenarioRanking) {
+        expect($scenarioRanking['plans'])->toHaveCount(3)
+            ->and(collect($scenarioRanking['plans'][0]['plan']['slots'])
+                ->flatMap(fn (array $slot): array => $slot['sets'])
+                ->max('set_number'))->toBe($scenarioRanking['sets_count']);
+    }
 });
+
+test('easy and hard matches build their expected result scenarios', function (string $presetKey, array $expectedLabels) {
+    $this->actingAs(User::factory()->create());
+
+    Livewire::test('pages::optimizer.create')
+        ->set('scenarioMode', 'preset')
+        ->set('presetKey', $presetKey)
+        ->call('submit')
+        ->assertHasNoErrors();
+
+    expect(collect(session('optimizer.input.scenarios'))->pluck('label')->all())->toBe($expectedLabels);
+})->with([
+    'easy' => ['easy_3_0', ['Łatwe 3:0']],
+    'hard' => ['hard_3_2', ['Trudne 3:1', 'Trudne 3:2']],
+]);
 
 test('optimizer result page maps shared reserve pool to both analyzed slots', function () {
     $this->actingAs(User::factory()->create());
@@ -642,17 +613,23 @@ test('optimizer result page shows safe preset breakdown across shorter scenarios
             'sets_count' => 4,
             'total_actions' => 182,
         ],
+        [
+            'label' => 'Standardowe 3:2',
+            'input' => '25:23, 22:25, 25:21, 20:25, 15:12',
+            'sets_count' => 5,
+            'total_actions' => 213,
+        ],
     ]);
 
     $this->get(route('optimizer.result'))
         ->assertOk()
-        ->assertSee('Tryb bezpieczeństwa: włączony')
+        ->assertSee('Rankingi liczone niezależnie dla każdego wyniku')
         ->assertSee('Standardowe 3:0')
         ->assertSee('Standardowe 3:1')
-        ->assertSee('Najgorszy');
+        ->assertSee('Standardowe 3:2');
 });
 
-test('optimizer result page aggregates multiple scenarios in ranking output', function () {
+test('optimizer result page ranks multiple scenarios independently', function () {
     $this->actingAs(User::factory()->create());
 
     Player::factory()->create([
@@ -711,10 +688,10 @@ test('optimizer result page aggregates multiple scenarios in ranking output', fu
 
     $this->get(route('optimizer.result'))
         ->assertOk()
-        ->assertSee('Agregacja scenariuszy: 2')
-        ->assertSee('Scenariusz referencyjny: Scenariusz 2')
-        ->assertSee('Ranking liczy zakresy wynikające z niepewnego momentu zmiany')
-        ->assertSee('Scenariusze: 2');
+        ->assertSee('Scenariusze wyniku: 2')
+        ->assertSee('Do 3 wariantów planu na scenariusz')
+        ->assertSee('Scenariusz 1')
+        ->assertSee('Scenariusz 2');
 });
 
 test('optimizer form validates reserve pool sum for different positions', function () {

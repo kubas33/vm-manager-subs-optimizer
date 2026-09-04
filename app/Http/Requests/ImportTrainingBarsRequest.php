@@ -30,9 +30,11 @@ class ImportTrainingBarsRequest extends FormRequest
     {
         return [
             'players' => ['required', 'array'],
-            'players.*.vm_player_id' => ['required', 'integer'],
+            'players.*.vm_player_id' => ['required', 'integer', 'min:1'],
             'players.*.name' => ['nullable', 'string', 'max:255'],
+            'players.*.position' => ['nullable', 'string', 'max:50'],
             'players.*.training_bar' => ['required', 'integer', 'between:0,100'],
+            'players.*.is_injured' => ['sometimes', 'boolean'],
         ];
     }
 }

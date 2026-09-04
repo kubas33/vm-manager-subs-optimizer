@@ -1,5 +1,6 @@
 <?php
 
+use App\Enums\PlayerPosition;
 use App\Models\Player;
 
 beforeEach(function () {
@@ -32,9 +33,10 @@ test('training bar import updates players matched by vm player id', function () 
     expect($player->fresh()->training_bar)->toBe(42);
 });
 
-test('training bar import warns about players missing from database without creating them', function () {
+test('training bar import creates players missing from database', function () {
     Player::factory()->withVmPlayerId(2060721)->create([
         'training_bar' => 6,
+        'is_injured' => false,
     ]);
 
     $this->postJson(route('training-bars.import'), [
@@ -47,7 +49,9 @@ test('training bar import warns about players missing from database without crea
             [
                 'vm_player_id' => 2004528,
                 'name' => 'Kwiatek, Kacper',
+                'position' => PlayerPosition::Setter->value,
                 'training_bar' => 1,
+                'is_injured' => true,
             ],
         ],
     ], [
@@ -56,17 +60,58 @@ test('training bar import warns about players missing from database without crea
         ->assertSuccessful()
         ->assertJson([
             'updated' => 1,
-            'warnings' => [
-                [
-                    'vm_player_id' => 2004528,
-                    'name' => 'Kwiatek, Kacper',
-                    'message' => 'Player not found in database.',
-                ],
-            ],
+            'created' => 1,
+            'warnings' => [],
         ]);
 
-    expect(Player::query()->where('vm_player_id', 2004528)->exists())->toBeFalse()
-        ->and(Player::query()->count())->toBe(1);
+    expect(Player::query()->where('vm_player_id', 2004528)->first())
+        ->not->toBeNull()
+        ->training_bar->toBe(1)
+        ->is_injured->toBeTrue()
+        ->position->toBe(PlayerPosition::Setter)
+        ->name->toBe('Kwiatek, Kacper');
+});
+
+test('training bar import updates injury status for existing players', function () {
+    $player = Player::factory()->withVmPlayerId(2060721)->create([
+        'training_bar' => 6,
+        'is_injured' => false,
+    ]);
+
+    $this->postJson(route('training-bars.import'), [
+        'players' => [
+            [
+                'vm_player_id' => $player->vm_player_id,
+                'training_bar' => 42,
+                'is_injured' => true,
+            ],
+        ],
+    ], [
+        'X-VM-Import-Token' => 'test-import-token',
+    ])->assertSuccessful()->assertJsonPath('updated', 1);
+
+    expect($player->fresh())
+        ->training_bar->toBe(42)
+        ->is_injured->toBeTrue();
+});
+
+test('training bar import warns when a missing player has no position', function () {
+    $this->postJson(route('training-bars.import'), [
+        'players' => [
+            [
+                'vm_player_id' => 2004528,
+                'name' => 'Kwiatek, Kacper',
+                'training_bar' => 1,
+            ],
+        ],
+    ], [
+        'X-VM-Import-Token' => 'test-import-token',
+    ])
+        ->assertSuccessful()
+        ->assertJsonPath('created', 0)
+        ->assertJsonPath('warnings.0.vm_player_id', 2004528);
+
+    expect(Player::query()->where('vm_player_id', 2004528)->exists())->toBeFalse();
 });
 
 test('training bar import rejects missing or invalid import token', function () {

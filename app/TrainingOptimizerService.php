@@ -241,6 +241,7 @@ final class TrainingOptimizerService
 
                 $players = collect($groupSlots)
                     ->flatMap(fn (array $slotDefinition): array => $slotDefinition['players'])
+                    ->reject(fn (Player $player): bool => $player->isInjured)
                     ->unique(fn (Player $player): int => $player->id)
                     ->sort(function (Player $left, Player $right): int {
                         if ($left->training_bar !== $right->training_bar) {

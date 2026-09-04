@@ -23,6 +23,9 @@ return [
     ],
 
     'vm_training_import' => [
+        'url' => env('VM_TRAINING_API_URL', 'https://faster.vm-manager.org/api/training'),
+        'api_token' => env('VM_TRAINING_API_TOKEN'),
+        'timeout' => (int) env('VM_TRAINING_API_TIMEOUT', 20),
         'token' => env('VM_TRAINING_IMPORT_TOKEN'),
     ],
 

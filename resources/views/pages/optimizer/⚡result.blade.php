@@ -128,7 +128,7 @@ new #[Title('Wynik optymalizacji')] class extends Component
             ->mapWithKeys(fn (array $pool): array => [$pool['position'] => (int) $pool['reserve_limit']]);
 
         $playersByPosition = Player::query()
-            ->active()
+            ->available()
             ->whereIn('position', $positionValues->all())
             ->orderBy('training_bar')
             ->orderBy('name')
@@ -198,22 +198,49 @@ new #[Title('Wynik optymalizacji')] class extends Component
      * }>
      */
     #[Computed]
-    public function rankedPlans(): array
+    public function scenarioRankings(): array
     {
         if (! $this->canBuildRanking || $this->scenarioSet === null) {
             return [];
         }
 
-        return (new TrainingOptimizerService(
+        $optimizer = new TrainingOptimizerService(
             new TrainingGainCalculator(),
             new SubstitutionPlanGenerator(),
-        ))->optimizeForScenarioSet(
-            slotDefinitions: $this->slotDefinitions,
-            scenarioSet: $this->scenarioSet,
-            limit: 5,
-            fairnessThreshold: $this->fairnessThreshold,
-            safeMode: $this->scenarioSafetyMode,
         );
+
+        return collect($this->scenarioModels)
+            ->map(fn (MatchScenario $scenario): array => [
+                'label' => $scenario->label,
+                'input' => $scenario->input,
+                'sets_count' => $scenario->setsCount(),
+                'plans' => $optimizer->optimize(
+                    slotDefinitions: $this->slotDefinitions,
+                    scenario: $scenario,
+                    limit: 3,
+                    fairnessThreshold: $this->fairnessThreshold,
+                ),
+            ])
+            ->values()
+            ->all();
+    }
+
+    #[Computed]
+    public function rankedPlans(): array
+    {
+        return collect($this->scenarioRankings)
+            ->flatMap(fn (array $scenarioRanking): array => collect($scenarioRanking['plans'])
+                ->values()
+                ->map(fn (array $plan, int $index): array => [
+                    ...$plan,
+                    'scenario_label' => $scenarioRanking['label'],
+                    'scenario_input' => $scenarioRanking['input'],
+                    'scenario_sets_count' => $scenarioRanking['sets_count'],
+                    'scenario_rank' => $index + 1,
+                ])
+                ->all())
+            ->values()
+            ->all();
     }
 
     #[Computed]
@@ -246,7 +273,7 @@ new #[Title('Wynik optymalizacji')] class extends Component
     #[Computed]
     public function lineupRecommendations(): array
     {
-        return (new LineupRecommendationService)->recommend();
+        return (new LineupRecommendationService)->recommend(Player::query()->available()->get());
     }
 
     #[Computed]
@@ -441,16 +468,16 @@ new #[Title('Wynik optymalizacji')] class extends Component
                 <div class="mt-3 text-2xl font-semibold text-zinc-950 dark:text-zinc-50">{{ $optimizerInput['scenario_mode_label'] }}</div>
                 <flux:text class="mt-3 text-sm text-zinc-600 dark:text-zinc-300">{{ $optimizerInput['scenario_source_label'] }}</flux:text>
                 <flux:text class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
-                    Tryb bezpieczeństwa: {{ $this->scenarioSafetyMode ? 'włączony' : 'wyłączony' }}
+                    Rankingi liczone niezależnie dla każdego wyniku
                 </flux:text>
                 <flux:text class="mt-3 text-sm text-zinc-600 dark:text-zinc-300">
                     Próg minimalnego paska: {{ $this->fairnessThreshold }}%
                 </flux:text>
                 <flux:text class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
-                    Agregacja scenariuszy: {{ $this->scenariosCount }}
+                    Scenariusze wyniku: {{ $this->scenariosCount }}
                 </flux:text>
                 <flux:text class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
-                    Scenariusz referencyjny: {{ $this->rankingScenario?->label ?? 'Brak' }}
+                    Do 3 wariantów planu na scenariusz
                 </flux:text>
             </div>
 
@@ -504,7 +531,7 @@ new #[Title('Wynik optymalizacji')] class extends Component
             <div class="flex items-center justify-between gap-4">
                 <div>
                     <flux:heading size="lg">Znormalizowane scenariusze</flux:heading>
-                    <flux:text class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">To jest payload przygotowany pod przyszłe obliczenia i ranking wariantów.</flux:text>
+                    <flux:text class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">Każdy wynik ma własny ranking i rekomendowany plan zmian.</flux:text>
                 </div>
                 <flux:badge color="sky">{{ $this->scenariosCount }} wpisy</flux:badge>
             </div>
@@ -532,22 +559,13 @@ new #[Title('Wynik optymalizacji')] class extends Component
                 <div class="flex items-center justify-between gap-4">
                 <div>
                     <flux:heading size="lg">Top warianty</flux:heading>
-                    @if ($this->scenarioSafetyMode)
-                        <flux:text class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
-                            Ranking działa w trybie bezpiecznym. Najpierw liczy się najgorszy scenariusz z wybranego zakresu, potem liczba zawodników poniżej progu {{ $this->fairnessThreshold }}% i bardziej wyrównany rozkład pasków. Plan bazowy do generowania wariantów bierzemy ze scenariusza referencyjnego o największej liczbie setów.
-                        </flux:text>
-                    @else
-                        <flux:text class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
-                            Ranking jest agregowany po wszystkich scenariuszach z formularza. Najpierw liczy się suma przyrostu, potem liczba zawodników poniżej progu {{ $this->fairnessThreshold }}%, a potem bardziej wyrównany rozkład pasków. Plan bazowy do generowania wariantów bierzemy ze scenariusza referencyjnego o największej liczbie setów.
-                        </flux:text>
-                    @endif
+                    <flux:text class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
+                        Każdy scenariusz wyniku jest optymalizowany osobno. Najpierw liczy się przyrost treningu, potem liczba zawodników poniżej progu {{ $this->fairnessThreshold }}% i bardziej wyrównany rozkład pasków.
+                    </flux:text>
                 </div>
                 <div class="flex gap-2">
                     @if ($this->rankingScenario !== null)
                         <flux:badge color="sky">{{ $this->rankingScenario->setsCount() }} sety</flux:badge>
-                    @endif
-                    @if ($this->scenarioSafetyMode)
-                        <flux:badge color="amber">Bezpieczny</flux:badge>
                     @endif
                     @if ($this->hasRankedPlans)
                         <flux:badge color="emerald">{{ count($this->rankedPlans) }} wariantów</flux:badge>
@@ -570,7 +588,10 @@ new #[Title('Wynik optymalizacji')] class extends Component
                             <div wire:key="ranked-plan-{{ $index }}" class="rounded-2xl border border-zinc-200 bg-zinc-50/70 p-4 dark:border-zinc-700 dark:bg-zinc-800/60">
                                 <div class="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                                     <div>
-                                        <flux:text class="font-medium text-zinc-950 dark:text-zinc-50">Wariant {{ $index + 1 }}</flux:text>
+                                        @if ($rankedPlan['scenario_rank'] === 1)
+                                            <flux:heading size="lg" class="mb-3">{{ $rankedPlan['scenario_label'] }}</flux:heading>
+                                        @endif
+                                        <flux:text class="font-medium text-zinc-950 dark:text-zinc-50">Wariant {{ $rankedPlan['scenario_rank'] }} dla {{ $rankedPlan['scenario_label'] }}</flux:text>
                                         @php($worstCaseScenario = collect($rankedPlan['scenario_results'] ?? [])->firstWhere('is_worst_case', true))
                                         <flux:text class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
                                             @if ($this->scenarioSafetyMode && $worstCaseScenario !== null)
@@ -592,8 +613,8 @@ new #[Title('Wynik optymalizacji')] class extends Component
                                             @endif
                                         </flux:text>
                                     </div>
-                                    @if ($index === 0)
-                                        <flux:badge color="emerald">Najlepszy</flux:badge>
+                                    @if ($rankedPlan['scenario_rank'] === 1)
+                                        <flux:badge color="emerald">Rekomendowany</flux:badge>
                                     @endif
                                 </div>
 
