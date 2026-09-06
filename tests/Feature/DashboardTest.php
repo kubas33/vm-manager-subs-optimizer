@@ -8,6 +8,7 @@ test('guests can visit the dashboard when app auth is disabled', function () {
     $response->assertOk();
     $response->assertSee('VM Manager Subs Optimizer');
     $response->assertSee('Przejdź do zawodników');
+    $response->assertSee('Połączenie z VM Manager');
 });
 
 test('guests are redirected to the login page when app auth is enabled', function () {
@@ -27,4 +28,5 @@ test('authenticated users can visit the dashboard', function () {
     $response->assertOk();
     $response->assertSee('VM Manager Subs Optimizer');
     $response->assertSee('Przejdź do zawodników');
+    $response->assertSee('Połączenie z VM Manager');
 });

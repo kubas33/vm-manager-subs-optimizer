@@ -3,8 +3,8 @@
 namespace App;
 
 use App\Models\Player;
+use App\Packages\VmManagerApi\Services\VmManagerApiService;
 use Illuminate\Support\Collection;
-use Illuminate\Support\Facades\Http;
 use InvalidArgumentException;
 use RuntimeException;
 use Throwable;
@@ -119,18 +119,18 @@ final class VmTacticsService
         string $matchType = 'League',
         int $matchId = 0,
     ): array {
-        $url = config('services.vm_tactics.url');
+        $api = app(VmManagerApiService::class);
 
-        if (! is_string($url) || trim($url) === '') {
-            throw new RuntimeException('VM Manager tactics is not configured.');
+        try {
+            $existing = $api->getTactics($matchType, $matchId);
+        } catch (Throwable $exception) {
+            if ($exception instanceof RuntimeException) {
+                throw $exception;
+            }
+
+            $existing = [];
         }
 
-        $fallbackToken = config('services.vm_tactics.api_token') ?: config('services.vm_training_import.api_token');
-        $vmAuth = app(VmAuthService::class);
-        $token = $vmAuth->token(is_string($fallbackToken) ? $fallbackToken : null);
-        $timeout = (int) config('services.vm_tactics.timeout', 20);
-
-        $existing = $this->fetchExistingTactic($url, $token, $timeout, $matchType, $matchId, $vmAuth);
         $payload = $this->buildPayload(
             $recommendation,
             $availablePlayers,
@@ -140,67 +140,16 @@ final class VmTacticsService
         );
 
         try {
-            $response = Http::acceptJson()
-                ->withToken($token)
-                ->timeout($timeout)
-                ->asJson()
-                ->post($url, $payload);
-        } catch (Throwable) {
-            throw new RuntimeException('VM Manager tactics request failed.');
-        }
+            $api->saveTactics($payload);
+        } catch (Throwable $exception) {
+            if ($exception instanceof RuntimeException) {
+                throw $exception;
+            }
 
-        if ($vmAuth->invalidateOnUnauthorized($response->status())) {
-            throw new RuntimeException('VM Manager authentication expired. Please log in again.');
-        }
-
-        if (! $response->successful()) {
             throw new RuntimeException('VM Manager tactics request failed.');
         }
 
         return $payload;
-    }
-
-    /**
-     * @return array{
-     *     block1: int,
-     *     blockPassive1: int,
-     *     block2: int,
-     *     blockPassive2: int,
-     *     block3: int,
-     *     blockPassive3: int,
-     * }
-     */
-    private function fetchExistingTactic(
-        string $url,
-        string $token,
-        int $timeout,
-        string $matchType,
-        int $matchId,
-        VmAuthService $vmAuth,
-    ): array {
-        try {
-            $response = Http::acceptJson()
-                ->withToken($token)
-                ->timeout($timeout)
-                ->get($url, [
-                    'type' => $matchType,
-                    'matchId' => (string) $matchId,
-                ]);
-        } catch (Throwable) {
-            return [];
-        }
-
-        if ($vmAuth->invalidateOnUnauthorized($response->status())) {
-            throw new RuntimeException('VM Manager authentication expired. Please log in again.');
-        }
-
-        if (! $response->successful()) {
-            return [];
-        }
-
-        $json = $response->json();
-
-        return is_array($json) ? $json : [];
     }
 
     /**
@@ -271,14 +220,7 @@ final class VmTacticsService
      */
     private function normalizeBlockSettings(array $blockSettings): array
     {
-        $defaults = config('services.vm_tactics.default_blocks', [
-            'block1' => 7,
-            'blockPassive1' => 1,
-            'block2' => 7,
-            'blockPassive2' => 1,
-            'block3' => 7,
-            'blockPassive3' => 0,
-        ]);
+        $defaults = app(VmManagerApiService::class)->defaultBlocks();
 
         $normalized = [];
 

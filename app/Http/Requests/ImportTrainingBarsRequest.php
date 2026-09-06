@@ -2,6 +2,7 @@
 
 namespace App\Http\Requests;
 
+use App\Packages\VmManagerApi\Services\VmManagerApiService;
 use Illuminate\Contracts\Validation\ValidationRule;
 use Illuminate\Foundation\Http\FormRequest;
 
@@ -12,7 +13,7 @@ class ImportTrainingBarsRequest extends FormRequest
      */
     public function authorize(): bool
     {
-        $configuredToken = config('services.vm_training_import.token');
+        $configuredToken = app(VmManagerApiService::class)->importWebhookToken();
         $requestToken = $this->header('X-VM-Import-Token');
 
         return is_string($configuredToken)

@@ -36,8 +36,8 @@ test('players page shows injury status', function () {
 test('players page imports training bars and creates missing players from VM Manager', function () {
     $this->actingAs(User::factory()->create());
 
-    config()->set('services.vm_training_import.url', 'https://faster.vm-manager.org/api/training');
-    config()->set('services.vm_training_import.api_token', 'remote-api-token');
+    config()->set('vm-manager.api_url', 'https://faster.vm-manager.org');
+    config()->set('vm-manager.api_token', 'remote-api-token');
 
     Http::fake([
         'https://faster.vm-manager.org/api/training' => Http::response([

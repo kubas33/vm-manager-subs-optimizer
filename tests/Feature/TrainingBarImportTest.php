@@ -4,7 +4,7 @@ use App\Enums\PlayerPosition;
 use App\Models\Player;
 
 beforeEach(function () {
-    config()->set('services.vm_training_import.token', 'test-import-token');
+    config()->set('vm-manager.import_token', 'test-import-token');
 });
 
 test('training bar import updates players matched by vm player id', function () {

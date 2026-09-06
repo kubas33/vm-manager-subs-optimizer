@@ -3,17 +3,15 @@
 namespace App;
 
 use App\Models\Player;
-use App\VmAuthService;
+use App\Packages\VmManagerApi\Services\VmManagerApiService;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\Http;
 use InvalidArgumentException;
+use RuntimeException;
 use Throwable;
 
 final class VmSubstitutionService
 {
-    private const DEFAULT_CHANGES_URL = 'https://faster.vm-manager.org/api/tactics/changes';
-
     private const MAX_SET_NUMBER = 5;
 
     /**
@@ -255,38 +253,17 @@ final class VmSubstitutionService
             return $this->result();
         }
 
-        $url = config('services.vm_tactics.changes_url') ?: self::DEFAULT_CHANGES_URL;
-
-        if (! is_string($url) || $url === '') {
-            return $this->failure('Adres zmian VM Managera nie jest skonfigurowany.');
-        }
-
-        $timeout = max(1, (int) config('services.vm_tactics.timeout', 20));
-        $fallbackToken = $this->fallbackToken();
-
-        try {
-            $auth = app(VmAuthService::class);
-            $token = $auth->token($fallbackToken);
-        } catch (Throwable) {
-            return $this->failure('Nie udało się uwierzytelnić w VM Managerze.');
-        }
-
-        if (! is_string($token) || trim($token) === '') {
-            return $this->failure('Uwierzytelnienie VM Managera nie jest skonfigurowane.');
-        }
-
+        $api = app(VmManagerApiService::class);
+        $timeout = $api->timeout();
         $lockSeconds = max(30, $timeout * (count($payloads) + 1));
-        $lockKey = 'vm-substitution-sync:'.hash('sha256', $token).':'.$matchType;
+        $lockKey = 'vm-substitution-sync:'.hash('sha256', session()->getId().'|'.$matchType);
 
         try {
             $lockedResult = Cache::lock($lockKey, $lockSeconds)->get(
                 fn (): array => $this->pushPayloads(
                     payloads: $payloads,
-                    url: $url,
-                    token: $token,
-                    timeout: $timeout,
                     matchType: $matchType,
-                    auth: $auth,
+                    api: $api,
                 ),
             );
         } catch (Throwable) {
@@ -310,31 +287,15 @@ final class VmSubstitutionService
      */
     private function pushPayloads(
         array $payloads,
-        string $url,
-        string $token,
-        int $timeout,
         string $matchType,
-        VmAuthService $auth,
+        VmManagerApiService $api,
     ): array {
         try {
-            $response = Http::acceptJson()
-                ->withToken($token)
-                ->timeout($timeout)
-                ->get($url, ['type' => $matchType]);
+            $existing = $api->listTacticsChanges($matchType);
+        } catch (RuntimeException $exception) {
+            return $this->failure($exception->getMessage());
         } catch (Throwable) {
             return $this->failure('Nie udało się połączyć z VM Managerem podczas odczytu zmian.');
-        }
-
-        if (! $response->successful()) {
-            $this->logoutOnUnauthorized($response, $auth);
-
-            return $this->failure($this->httpError('Reading substitution changes', $response));
-        }
-
-        $existing = $response->json();
-
-        if (! is_array($existing) || ! array_is_list($existing)) {
-            return $this->failure('VM Manager returned an invalid substitution changes list.');
         }
 
         [$missingPayloads, $skipped] = $this->missingPayloads($payloads, $existing, $matchType);
@@ -342,11 +303,13 @@ final class VmSubstitutionService
 
         foreach ($missingPayloads as $payload) {
             try {
-                $response = Http::acceptJson()
-                    ->withToken($token)
-                    ->timeout($timeout)
-                    ->asJson()
-                    ->post($url, $payload);
+                $response = $api->createTacticsChange($payload);
+            } catch (RuntimeException $exception) {
+                return [
+                    'created' => $created,
+                    'skipped' => $skipped,
+                    'error' => $exception->getMessage(),
+                ];
             } catch (Throwable) {
                 return [
                     'created' => $created,
@@ -356,8 +319,6 @@ final class VmSubstitutionService
             }
 
             if (! $response->successful()) {
-                $this->logoutOnUnauthorized($response, $auth);
-
                 return [
                     'created' => $created,
                     'skipped' => $skipped,
@@ -568,20 +529,6 @@ final class VmSubstitutionService
         return is_string($value) && in_array($value, ['1', 'true'], true);
     }
 
-    private function fallbackToken(): ?string
-    {
-        foreach ([
-            config('services.vm_tactics.api_token'),
-            config('services.vm_training_import.api_token'),
-        ] as $token) {
-            if (is_string($token) && trim($token) !== '') {
-                return $token;
-            }
-        }
-
-        return null;
-    }
-
     private function responseReportsFailure(Response $response): bool
     {
         $json = $response->json();
@@ -591,15 +538,6 @@ final class VmSubstitutionService
         }
 
         return in_array($json['success'], [false, 0, '0', 'false'], true);
-    }
-
-    private function logoutOnUnauthorized(Response $response, VmAuthService $auth): void
-    {
-        if (! in_array($response->status(), [401, 403], true)) {
-            return;
-        }
-
-        $auth->logout();
     }
 
     private function httpError(string $operation, Response $response): string

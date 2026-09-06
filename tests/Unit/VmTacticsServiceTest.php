@@ -114,9 +114,8 @@ test('tactics payload rejects a starter without a VM player ID', function () {
 });
 
 test('push recommendation posts the lineup and preserves existing block settings', function () {
-    config()->set('services.vm_tactics.url', 'https://faster.vm-manager.org/api/tactics');
-    config()->set('services.vm_tactics.api_token', 'tactics-token');
-    config()->set('services.vm_training_import.api_token', null);
+    config()->set('vm-manager.api_url', 'https://faster.vm-manager.org');
+    config()->set('vm-manager.api_token', 'tactics-token');
 
     Http::fake([
         'https://faster.vm-manager.org/api/tactics*' => Http::sequence()

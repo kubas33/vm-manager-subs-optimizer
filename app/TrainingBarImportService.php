@@ -4,10 +4,8 @@ namespace App;
 
 use App\Enums\PlayerPosition;
 use App\Models\Player;
+use App\Packages\VmManagerApi\Services\VmManagerApiService;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Http;
-use RuntimeException;
-use Throwable;
 
 final class TrainingBarImportService
 {
@@ -29,38 +27,7 @@ final class TrainingBarImportService
      */
     public function importFromVmManager(): array
     {
-        $url = config('services.vm_training_import.url');
-
-        if (! is_string($url) || trim($url) === '') {
-            throw new RuntimeException('VM Manager import is not configured.');
-        }
-
-        $fallbackToken = config('services.vm_training_import.api_token');
-        $vmAuth = app(VmAuthService::class);
-        $token = $vmAuth->token(is_string($fallbackToken) ? $fallbackToken : null);
-
-        try {
-            $response = Http::acceptJson()
-                ->withToken($token)
-                ->timeout((int) config('services.vm_training_import.timeout', 20))
-                ->get($url);
-        } catch (Throwable) {
-            throw new RuntimeException('VM Manager import request failed.');
-        }
-
-        if ($vmAuth->invalidateOnUnauthorized($response->status())) {
-            throw new RuntimeException('VM Manager authentication expired. Please log in again.');
-        }
-
-        if (! $response->successful()) {
-            throw new RuntimeException('VM Manager import request failed.');
-        }
-
-        $players = $response->json('players');
-
-        if (! is_array($players)) {
-            throw new RuntimeException('VM Manager returned an invalid players payload.');
-        }
+        $players = app(VmManagerApiService::class)->getTrainingPlayers();
 
         return $this->import(array_values(array_filter(
             $players,

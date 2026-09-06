@@ -2,12 +2,76 @@
 
 use App\Enums\PlayerPosition;
 use App\Models\Player;
+use App\Packages\VmManagerApi\Services\VmManagerApiService;
+use Illuminate\Support\Facades\RateLimiter;
 use Livewire\Attributes\Computed;
 use Livewire\Attributes\Title;
 use Livewire\Component;
 
 new #[Title('Dashboard')] class extends Component
 {
+    public string $vmLogin = '';
+
+    public string $vmPassword = '';
+
+    public string $vmLoginStatus = '';
+
+    #[Computed]
+    public function vmConnected(): bool
+    {
+        return app(VmManagerApiService::class)->isAuthenticated();
+    }
+
+    public function loginToVm(): void
+    {
+        $this->authorizeVmAction();
+        $this->resetValidation('vmConnection');
+        $this->vmLoginStatus = '';
+        $rateLimitKey = 'vm-login:'.hash('sha256', session()->getId().'|'.request()->ip());
+
+        try {
+            $this->validate([
+                'vmLogin' => ['required', 'string', 'max:255'],
+                'vmPassword' => ['required', 'string', 'max:1024'],
+            ], [
+                'vmLogin.required' => 'Podaj login VM Manager.',
+                'vmPassword.required' => 'Podaj hasło VM Manager.',
+            ]);
+
+            if (RateLimiter::tooManyAttempts($rateLimitKey, 5)) {
+                $this->addError('vmConnection', 'Zbyt wiele prób logowania. Spróbuj ponownie za minutę.');
+
+                return;
+            }
+
+            RateLimiter::hit($rateLimitKey, 60);
+            app(VmManagerApiService::class)->login($this->vmLogin, $this->vmPassword);
+            RateLimiter::clear($rateLimitKey);
+            $this->vmLoginStatus = 'Połączono z VM Manager. Możesz importować paski i wysyłać zmiany.';
+        } catch (\Illuminate\Validation\ValidationException $exception) {
+            throw $exception;
+        } catch (\Throwable) {
+            $this->addError('vmConnection', 'Nie udało się zalogować do VM Manager. Sprawdź login, hasło i adres API.');
+        } finally {
+            $this->vmPassword = '';
+            unset($this->vmConnected);
+        }
+    }
+
+    public function logoutFromVm(): void
+    {
+        $this->authorizeVmAction();
+        app(VmManagerApiService::class)->logout();
+        $this->vmPassword = '';
+        $this->vmLoginStatus = 'Rozłączono z VM Manager.';
+        unset($this->vmConnected);
+    }
+
+    private function authorizeVmAction(): void
+    {
+        abort_unless(config('auth.disable_auth') || auth()->check(), 403);
+    }
+
     #[Computed]
     public function activePlayersCount(): int
     {
@@ -60,6 +124,34 @@ new #[Title('Dashboard')] class extends Component
                 </flux:button>
             </div>
         </div>
+    </section>
+
+    <section class="rounded-3xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
+        <flux:heading size="lg">Połączenie z VM Manager</flux:heading>
+        <flux:text class="mt-1 max-w-2xl text-sm text-zinc-600 dark:text-zinc-300">
+            Zaloguj się raz, żeby dostać token sesji używany przy imporcie pasków i wysyłaniu zmian do gry.
+        </flux:text>
+
+        @if ($this->vmConnected)
+            <div class="mt-4 flex flex-wrap items-center gap-3">
+                <flux:badge color="emerald">Połączono</flux:badge>
+                <flux:button wire:click="logoutFromVm">Rozłącz</flux:button>
+                <flux:button variant="ghost" :href="route('players.index')" wire:navigate>
+                    Importuj paski
+                </flux:button>
+            </div>
+        @else
+            <form wire:submit="loginToVm" class="mt-4 flex flex-col gap-4 sm:flex-row sm:items-end">
+                <flux:input wire:model="vmLogin" label="Login VM Manager" autocomplete="username" />
+                <flux:input wire:model="vmPassword" type="password" label="Hasło VM Manager" autocomplete="current-password" />
+                <flux:button type="submit" variant="primary">Połącz z VM Manager</flux:button>
+            </form>
+        @endif
+
+        @if ($vmLoginStatus !== '')
+            <flux:text class="mt-3" role="status">{{ $vmLoginStatus }}</flux:text>
+        @endif
+        <flux:error name="vmConnection" />
     </section>
 
     <section class="grid gap-4 md:grid-cols-3">

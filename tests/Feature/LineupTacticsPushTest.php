@@ -64,8 +64,8 @@ test('optimizer result page can send the primary lineup to VM Manager', function
 
     seedCompleteTacticsRoster();
 
-    config()->set('services.vm_tactics.url', 'https://faster.vm-manager.org/api/tactics');
-    config()->set('services.vm_tactics.api_token', 'tactics-token');
+    config()->set('vm-manager.api_url', 'https://faster.vm-manager.org');
+    config()->set('vm-manager.api_token', 'tactics-token');
 
     Http::fake([
         'https://faster.vm-manager.org/api/tactics*' => Http::sequence()
