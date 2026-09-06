@@ -8,17 +8,210 @@ use App\SubstitutionPlanGenerator;
 use App\TrainingGainCalculator;
 use App\LineupRecommendationService;
 use App\TrainingOptimizerService;
+use App\VmTacticsService;
+use App\VmAuthService;
+use App\VmSubstitutionService;
+use Illuminate\Support\Facades\RateLimiter;
+use Illuminate\Validation\Rule;
 use Livewire\Attributes\Computed;
+use Livewire\Attributes\Locked;
 use Livewire\Attributes\Title;
 use Livewire\Component;
 
 new #[Title('Wynik optymalizacji')] class extends Component
 {
+    #[Locked]
     public array $optimizerInput = [];
+
+    public string $vmLogin = '';
+
+    public string $vmPassword = '';
+
+    public string $vmLoginStatus = '';
+
+    public string $substitutionsStatus = '';
+
+    #[Computed]
+    public function vmConnected(): bool
+    {
+        return app(VmAuthService::class)->isAuthenticated();
+    }
+
+    public function loginToVm(): void
+    {
+        $this->authorizeVmAction();
+        $this->resetValidation('vmConnection');
+        $this->vmLoginStatus = '';
+        $rateLimitKey = 'vm-login:'.hash('sha256', session()->getId().'|'.request()->ip());
+
+        try {
+            $this->validate([
+                'vmLogin' => ['required', 'string', 'max:255'],
+                'vmPassword' => ['required', 'string', 'max:1024'],
+            ], [
+                'vmLogin.required' => 'Podaj login VM Manager.',
+                'vmPassword.required' => 'Podaj hasło VM Manager.',
+            ]);
+
+            if (RateLimiter::tooManyAttempts($rateLimitKey, 5)) {
+                $this->addError('vmConnection', 'Zbyt wiele prób logowania. Spróbuj ponownie za minutę.');
+
+                return;
+            }
+
+            RateLimiter::hit($rateLimitKey, 60);
+            app(VmAuthService::class)->login($this->vmLogin, $this->vmPassword);
+            RateLimiter::clear($rateLimitKey);
+            $this->vmLoginStatus = 'Połączono z VM Manager.';
+        } catch (\Illuminate\Validation\ValidationException $exception) {
+            throw $exception;
+        } catch (\Throwable) {
+            $this->addError('vmConnection', 'Nie udało się zalogować do VM Manager. Sprawdź login, hasło i konfigurację adresu logowania.');
+        } finally {
+            $this->vmPassword = '';
+            unset($this->vmConnected);
+        }
+    }
+
+    public function logoutFromVm(): void
+    {
+        $this->authorizeVmAction();
+        app(VmAuthService::class)->logout();
+        $this->vmPassword = '';
+        $this->vmLoginStatus = 'Rozłączono z VM Manager.';
+        unset($this->vmConnected);
+    }
+
+    public function pushSubstitutions(int $planIndex): void
+    {
+        $this->authorizeVmAction();
+        $this->resetValidation('substitutions');
+        $this->substitutionsStatus = '';
+        $this->validate(['tacticsMatchType' => ['required', Rule::in(array_keys($this->tacticsMatchTypeOptions))]]);
+        $rankedPlan = $this->rankedPlans[$planIndex] ?? null;
+
+        if (! is_array($rankedPlan)) {
+            $this->addError('substitutions', 'Nie znaleziono wariantu zmian do wysłania.');
+
+            return;
+        }
+
+        try {
+            $result = app(VmSubstitutionService::class)->pushPlan($rankedPlan['plan'], $this->tacticsMatchType);
+            $this->substitutionsStatus = 'Zapisano zmian: '.$result['created'].'. Pominięto już zapisane: '.$result['skipped'].'.';
+
+            if ($result['error'] !== null) {
+                $this->addError('substitutions', $result['error']);
+            }
+        } catch (\InvalidArgumentException $exception) {
+            $this->addError('substitutions', $exception->getMessage());
+        } catch (\Throwable) {
+            $this->addError('substitutions', 'Nie udało się wysłać zmian. Sprawdź połączenie z VM Manager i zaloguj się ponownie.');
+        } finally {
+            unset($this->vmConnected);
+        }
+    }
+
+    private function authorizeVmAction(): void
+    {
+        abort_unless(config('auth.disable_auth') || auth()->check(), 403);
+    }
+
+    public string $tacticsMatchType = 'League';
+
+    public bool $confirmingTacticsPush = false;
+
+    public ?int $pendingTacticsRecommendationIndex = null;
+
+    public string $tacticsStatus = '';
 
     public function mount(): void
     {
         $this->optimizerInput = session('optimizer.input', []);
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    #[Computed]
+    public function tacticsMatchTypeOptions(): array
+    {
+        return [
+            'League' => 'Liga',
+            'Cup' => 'Puchar',
+            'IntCup' => 'Puchar międzynarodowy',
+            'Friendly' => 'Towarzyski',
+        ];
+    }
+
+    public function lineupCanBePushed(array $recommendation): bool
+    {
+        return app(VmTacticsService::class)->canPush($recommendation);
+    }
+
+    public function requestPushLineup(int $recommendationIndex): void
+    {
+        $this->resetValidation('tactics');
+        $this->tacticsStatus = '';
+
+        $recommendation = $this->lineupRecommendations['recommendations'][$recommendationIndex] ?? null;
+
+        if (! is_array($recommendation) || ! $this->lineupCanBePushed($recommendation)) {
+            $this->addError('tactics', 'Nie można wysłać tego składu. Uzupełnij pełny skład i ID VM każdego startera.');
+
+            return;
+        }
+
+        $this->pendingTacticsRecommendationIndex = $recommendationIndex;
+        $this->confirmingTacticsPush = true;
+    }
+
+    public function cancelPushLineup(): void
+    {
+        $this->confirmingTacticsPush = false;
+        $this->pendingTacticsRecommendationIndex = null;
+    }
+
+    public function confirmPushLineup(): void
+    {
+        $this->authorizeVmAction();
+        $this->validate(['tacticsMatchType' => ['required', Rule::in(array_keys($this->tacticsMatchTypeOptions))]]);
+        $this->resetValidation('tactics');
+        $this->tacticsStatus = '';
+
+        $recommendationIndex = $this->pendingTacticsRecommendationIndex;
+        $recommendation = $recommendationIndex === null
+            ? null
+            : ($this->lineupRecommendations['recommendations'][$recommendationIndex] ?? null);
+
+        if (! is_array($recommendation)) {
+            $this->addError('tactics', 'Nie znaleziono składu do wysłania.');
+            $this->cancelPushLineup();
+
+            return;
+        }
+
+        try {
+            app(VmTacticsService::class)->pushRecommendation(
+                $recommendation,
+                Player::query()->available()->get(),
+                $this->tacticsMatchType,
+            );
+        } catch (\InvalidArgumentException $exception) {
+            $this->addError('tactics', $exception->getMessage());
+            $this->cancelPushLineup();
+
+            return;
+        } catch (\Throwable $exception) {
+            report($exception);
+            $this->addError('tactics', 'Nie udało się wysłać składu do gry. Sprawdź konfigurację adresu i tokenu VM.');
+            $this->cancelPushLineup();
+
+            return;
+        }
+
+        $this->tacticsStatus = 'Skład został wysłany do gry.';
+        $this->cancelPushLineup();
     }
 
     #[Computed]
@@ -304,6 +497,26 @@ new #[Title('Wynik optymalizacji')] class extends Component
     </section>
 
     <section class="rounded-3xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
+        <flux:heading size="lg">Połączenie z VM Manager</flux:heading>
+        @if ($this->vmConnected)
+            <div class="mt-4 flex items-center gap-3">
+                <flux:badge color="emerald">Połączono</flux:badge>
+                <flux:button wire:click="logoutFromVm">Rozłącz</flux:button>
+            </div>
+        @else
+            <form wire:submit="loginToVm" class="mt-4 flex flex-col gap-4 sm:flex-row sm:items-end">
+                <flux:input wire:model="vmLogin" label="Login VM Manager" autocomplete="username" />
+                <flux:input wire:model="vmPassword" type="password" label="Hasło VM Manager" autocomplete="current-password" />
+                <flux:button type="submit" variant="primary">Połącz z VM Manager</flux:button>
+            </form>
+        @endif
+        @if ($vmLoginStatus !== '')
+            <flux:text class="mt-3" role="status">{{ $vmLoginStatus }}</flux:text>
+        @endif
+        <flux:error name="vmConnection" />
+    </section>
+
+    <section class="rounded-3xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
         <div class="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
             <div>
                 <flux:heading size="lg">Propozycja składu</flux:heading>
@@ -311,12 +524,33 @@ new #[Title('Wynik optymalizacji')] class extends Component
                     Rekomendacja startowa na podstawie najniższych pasków treningowych w bazie. Do {{ \App\LineupRecommendationService::ALTERNATIVE_COUNT }} alternatyw — każda to pełny skład z kilkoma zmianami (zawodnik &lt;60% lub zbliżone paski ≥60%, ±{{ \App\LineupRecommendationService::ALTERNATIVE_SIMILAR_BAR_TOLERANCE }} p.p.).
                 </flux:text>
             </div>
-            @if (! $this->lineupRecommendations['is_complete'])
-                <flux:button variant="primary" :href="route('players.index')" wire:navigate>
-                    Zarządzaj zawodnikami
-                </flux:button>
-            @endif
+            <div class="flex flex-col gap-3 sm:flex-row sm:items-end">
+                <flux:select wire:model="tacticsMatchType" label="Typ meczu w grze" class="sm:w-56">
+                    @foreach ($this->tacticsMatchTypeOptions as $matchType => $label)
+                        <flux:select.option wire:key="tactics-match-type-{{ $matchType }}" :value="$matchType">{{ $label }}</flux:select.option>
+                    @endforeach
+                </flux:select>
+                @if (! $this->lineupRecommendations['is_complete'])
+                    <flux:button variant="primary" :href="route('players.index')" wire:navigate>
+                        Zarządzaj zawodnikami
+                    </flux:button>
+                @endif
+            </div>
         </div>
+
+        @if ($tacticsStatus !== '')
+            <flux:callout class="mt-6" icon="check-circle" color="emerald">
+                <flux:callout.heading>Wysłano do VM Manager</flux:callout.heading>
+                <flux:callout.text>{{ $tacticsStatus }}</flux:callout.text>
+            </flux:callout>
+        @endif
+
+        @error('tactics')
+            <flux:callout class="mt-6" icon="exclamation-triangle" color="red">
+                <flux:callout.heading>Nie wysłano składu</flux:callout.heading>
+                <flux:callout.text>{{ $message }}</flux:callout.text>
+            </flux:callout>
+        @enderror
 
         @if (! $this->hasLineupRecommendations)
             <flux:callout class="mt-6" icon="users" color="amber">
@@ -342,15 +576,35 @@ new #[Title('Wynik optymalizacji')] class extends Component
             @endif
 
             @php
-                $lineupPrimary = collect($this->lineupRecommendations['recommendations'])->firstWhere('kind', 'primary');
-                $lineupAlternatives = collect($this->lineupRecommendations['recommendations'])->where('kind', 'alternative')->values();
+                $lineupRecommendationsList = collect($this->lineupRecommendations['recommendations']);
+                $lineupPrimaryIndex = $lineupRecommendationsList->search(fn (array $recommendation): bool => $recommendation['kind'] === 'primary');
+                $lineupPrimary = $lineupPrimaryIndex === false ? null : $lineupRecommendationsList[$lineupPrimaryIndex];
+                $lineupAlternatives = $lineupRecommendationsList
+                    ->map(fn (array $recommendation, int $index): array => $recommendation + ['_index' => $index])
+                    ->where('kind', 'alternative')
+                    ->values();
             @endphp
 
             @if ($lineupPrimary !== null)
                 <div class="mt-6 max-w-md rounded-2xl border border-zinc-200 bg-zinc-50/70 p-4 dark:border-zinc-700 dark:bg-zinc-800/60">
                     <div class="flex items-center justify-between gap-3">
                         <flux:text class="font-medium text-zinc-950 dark:text-zinc-50">Skład główny</flux:text>
-                        <flux:badge color="emerald">Rekomendowany</flux:badge>
+                        <div class="flex items-center gap-2">
+                            <flux:badge color="emerald">Rekomendowany</flux:badge>
+                            @if ($this->lineupCanBePushed($lineupPrimary))
+                                <flux:button
+                                    size="sm"
+                                    variant="primary"
+                                    icon="arrow-up-tray"
+                                    wire:click="requestPushLineup({{ $lineupPrimaryIndex }})"
+                                    wire:loading.attr="disabled"
+                                >
+                                    Wyślij do gry
+                                </flux:button>
+                            @elseif ($this->lineupRecommendations['is_complete'])
+                                <flux:badge color="amber">Brak ID VM</flux:badge>
+                            @endif
+                        </div>
                     </div>
 
                     <div class="mt-4 grid grid-cols-3 gap-3">
@@ -390,7 +644,22 @@ new #[Title('Wynik optymalizacji')] class extends Component
                     <div class="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
                         @foreach ($lineupAlternatives as $alternativeIndex => $recommendation)
                             <div wire:key="lineup-alternative-{{ $alternativeIndex }}" class="rounded-2xl border border-zinc-200 bg-zinc-50/70 p-4 dark:border-zinc-700 dark:bg-zinc-800/60">
-                                <flux:text class="font-medium text-zinc-950 dark:text-zinc-50">Alternatywa {{ $alternativeIndex + 1 }}</flux:text>
+                                <div class="flex items-start justify-between gap-3">
+                                    <flux:text class="font-medium text-zinc-950 dark:text-zinc-50">Alternatywa {{ $alternativeIndex + 1 }}</flux:text>
+                                    @if ($this->lineupCanBePushed($recommendation))
+                                        <flux:button
+                                            size="sm"
+                                            variant="filled"
+                                            icon="arrow-up-tray"
+                                            wire:click="requestPushLineup({{ $recommendation['_index'] }})"
+                                            wire:loading.attr="disabled"
+                                        >
+                                            Wyślij do gry
+                                        </flux:button>
+                                    @elseif ($this->lineupRecommendations['is_complete'])
+                                        <flux:badge color="amber">Brak ID VM</flux:badge>
+                                    @endif
+                                </div>
 
                                 @if ($recommendation['swap_description'] !== null)
                                     <flux:text class="mt-2 text-sm text-zinc-600 dark:text-zinc-300">{{ $recommendation['swap_description'] }}</flux:text>
@@ -573,6 +842,16 @@ new #[Title('Wynik optymalizacji')] class extends Component
                 </div>
                 </div>
 
+                <flux:text class="mt-4 text-sm">
+                    Wysyłanie dodaje brakujące reguły dla wybranego typu meczu i zachowuje dotychczasowe zmiany.
+                    Przed wysłaniem ustaw w grze starterów i rezerwowych zgodnych z wybranym wariantem.
+                </flux:text>
+                @if ($substitutionsStatus !== '')
+                    <flux:text class="mt-3" role="status">{{ $substitutionsStatus }}</flux:text>
+                @endif
+                <flux:error name="substitutions" />
+                <flux:error name="tacticsMatchType" />
+
                 @if (! $this->hasRankedPlans)
                     <div class="mt-6">
                         <flux:callout icon="exclamation-triangle" color="amber">
@@ -613,9 +892,20 @@ new #[Title('Wynik optymalizacji')] class extends Component
                                             @endif
                                         </flux:text>
                                     </div>
-                                    @if ($rankedPlan['scenario_rank'] === 1)
-                                        <flux:badge color="emerald">Rekomendowany</flux:badge>
-                                    @endif
+                                    <div class="flex flex-wrap items-center gap-3">
+                                        @if ($rankedPlan['scenario_rank'] === 1)
+                                            <flux:badge color="emerald">Rekomendowany</flux:badge>
+                                        @endif
+                                        @if ($rankedPlan['substitutions_count'] > 0)
+                                            <flux:button
+                                                wire:click="pushSubstitutions({{ $index }})"
+                                                wire:confirm="Dodać zmiany wariantu {{ $rankedPlan['scenario_rank'] }} dla {{ $rankedPlan['scenario_label'] }} do VM Manager? Dotychczasowe reguły pozostaną w grze."
+                                                wire:loading.attr="disabled"
+                                                wire:target="pushSubstitutions"
+                                                variant="primary"
+                                            >Wyślij zmiany do gry</flux:button>
+                                        @endif
+                                    </div>
                                 </div>
 
                                 @php($scenarioResults = $rankedPlan['scenario_results'] ?? [])
@@ -757,4 +1047,25 @@ new #[Title('Wynik optymalizacji')] class extends Component
             </div>
         </section>
     @endif
+
+    <flux:modal wire:model.self="confirmingTacticsPush" class="max-w-lg">
+        <div class="space-y-4">
+            <flux:heading size="lg">Wysłać skład do gry?</flux:heading>
+            <flux:text class="text-zinc-600 dark:text-zinc-300">
+                Zoptymalizowany skład (7 na boisku + 5 rezerwowych o najniższych paskach) zostanie zapisany w VM Managerze jako taktyka: {{ $this->tacticsMatchTypeOptions[$tacticsMatchType] ?? $tacticsMatchType }}. Ustawienia bloku zostaną zachowane z aktualnej taktyki w grze.
+            </flux:text>
+        </div>
+
+        <div class="mt-6 flex justify-end gap-2">
+            <flux:modal.close>
+                <flux:button variant="filled" wire:click="cancelPushLineup">
+                    Anuluj
+                </flux:button>
+            </flux:modal.close>
+
+            <flux:button variant="primary" wire:click="confirmPushLineup" wire:loading.attr="disabled">
+                Wyślij skład
+            </flux:button>
+        </div>
+    </flux:modal>
 </div>

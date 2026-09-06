@@ -7,6 +7,7 @@ use App\Models\Player;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use RuntimeException;
+use Throwable;
 
 final class TrainingBarImportService
 {
@@ -29,18 +30,31 @@ final class TrainingBarImportService
     public function importFromVmManager(): array
     {
         $url = config('services.vm_training_import.url');
-        $token = config('services.vm_training_import.api_token');
 
-        if (! is_string($url) || $url === '' || ! is_string($token) || $token === '') {
+        if (! is_string($url) || trim($url) === '') {
             throw new RuntimeException('VM Manager import is not configured.');
         }
 
-        $response = Http::acceptJson()
-            ->withToken($token)
-            ->timeout((int) config('services.vm_training_import.timeout', 20))
-            ->get($url);
+        $fallbackToken = config('services.vm_training_import.api_token');
+        $vmAuth = app(VmAuthService::class);
+        $token = $vmAuth->token(is_string($fallbackToken) ? $fallbackToken : null);
 
-        $response->throw();
+        try {
+            $response = Http::acceptJson()
+                ->withToken($token)
+                ->timeout((int) config('services.vm_training_import.timeout', 20))
+                ->get($url);
+        } catch (Throwable) {
+            throw new RuntimeException('VM Manager import request failed.');
+        }
+
+        if ($vmAuth->invalidateOnUnauthorized($response->status())) {
+            throw new RuntimeException('VM Manager authentication expired. Please log in again.');
+        }
+
+        if (! $response->successful()) {
+            throw new RuntimeException('VM Manager import request failed.');
+        }
 
         $players = $response->json('players');
 
