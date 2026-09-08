@@ -92,17 +92,39 @@ test('chosen optimizer variant sends VM substitutions only after its action usin
     seedVmSubstitutionScenario();
     session()->put('vm_auth.token', Crypt::encryptString('login-token'));
 
-    Http::fake([
-        '*/api/tactics/changes*' => Http::response([]),
-    ]);
+    Http::fake(function (Request $request) {
+        if (str_contains($request->url(), '/api/tactics/changes')) {
+            return Http::response([]);
+        }
+
+        if ($request->method() === 'GET') {
+            return Http::response([
+                'idPlayer1' => 90101,
+                'idPlayer2' => 99001,
+                'idPlayer3' => 99002,
+                'idPlayer4' => 99003,
+                'idPlayer5' => 99004,
+                'idPlayer6' => 99005,
+                'idPlayer7' => 99006,
+                'block1' => 7,
+                'blockPassive1' => 1,
+                'block2' => 7,
+                'blockPassive2' => 1,
+                'block3' => 7,
+                'blockPassive3' => 0,
+            ]);
+        }
+
+        return Http::response(['ok' => true]);
+    });
 
     Livewire::test('pages::optimizer.result')
-        ->assertSee('Wyślij zmiany do gry')
+        ->assertSee('Wyślij skład i zmiany do gry')
         ->assertDontSee('Połączenie z VM Manager')
         ->set('tacticsMatchType', 'Friendly')
         ->call('pushSubstitutions', 0)
         ->assertHasNoErrors()
-        ->assertSee('Zapisano zmian:');
+        ->assertSee('Dodano zmian:');
 
     Http::assertSent(fn (Request $request): bool => $request->method() === 'GET'
         && str_contains($request->url(), '/api/tactics/changes?type=Friendly')
@@ -114,6 +136,78 @@ test('chosen optimizer variant sends VM substitutions only after its action usin
         && in_array($request['playerIn'], [90101, 90202], true)
         && in_array($request['playerOut'], [90101, 90202], true)
         && $request['playerIn'] !== $request['playerOut']);
+});
+
+test('chosen optimizer variant sends its reserve in the full VM tactics payload before its changes', function () {
+    seedVmSubstitutionScenario();
+    session()->put('vm_auth.token', Crypt::encryptString('login-token'));
+
+    $component = Livewire::test('pages::optimizer.result');
+    $selectedPlan = $component->get('rankedPlans')[0]['plan'];
+    $changePayloads = app(\App\VmSubstitutionService::class)->buildPayloads($selectedPlan);
+    $benchPlayerIds = collect($changePayloads)->pluck('playerIn')->unique()->values()->all();
+    $courtPlayerIds = collect($changePayloads)->pluck('playerOut')->unique()->values()->all();
+
+    while (count($courtPlayerIds) < 7) {
+        $courtPlayerIds[] = 99000 + count($courtPlayerIds);
+    }
+
+    $existingTactics = [
+        ...collect($courtPlayerIds)
+            ->take(7)
+            ->values()
+            ->mapWithKeys(fn (int $playerId, int $index): array => ['idPlayer'.($index + 1) => $playerId])
+            ->all(),
+        'block1' => 7,
+        'blockPassive1' => 1,
+        'block2' => 7,
+        'blockPassive2' => 1,
+        'block3' => 7,
+        'blockPassive3' => 0,
+    ];
+
+    Http::fake(function (Request $request) use ($existingTactics) {
+        if (str_contains($request->url(), '/api/tactics/changes')) {
+            return Http::response([]);
+        }
+
+        if ($request->method() === 'GET') {
+            return Http::response($existingTactics);
+        }
+
+        return Http::response(['ok' => true]);
+    });
+
+    $component
+        ->call('pushSubstitutions', 0)
+        ->assertHasNoErrors()
+        ->assertSee('Dodano zmian:');
+
+    Http::assertSentInOrder([
+        fn (Request $request): bool => $request->method() === 'GET'
+            && str_contains($request->url(), '/api/tactics?type=League')
+            && $request->hasHeader('Authorization', 'Bearer login-token'),
+        function (Request $request) use ($courtPlayerIds, $benchPlayerIds): bool {
+            $expectedBenchPlayerIds = array_pad($benchPlayerIds, 5, null);
+
+            return $request->method() === 'POST'
+                && str_ends_with($request->url(), '/api/tactics')
+                && $request['matchType'] === 'League'
+                && $request['player1'] === $courtPlayerIds[0]
+                && $request['player7'] === $courtPlayerIds[6]
+                && $request['player8'] === $expectedBenchPlayerIds[0]
+                && $request['player9'] === $expectedBenchPlayerIds[1]
+                && $request['player10'] === $expectedBenchPlayerIds[2]
+                && $request['player11'] === $expectedBenchPlayerIds[3]
+                && $request['player12'] === $expectedBenchPlayerIds[4]
+                && $request['block1'] === 7
+                && $request['blockPassive3'] === 0;
+        },
+        fn (Request $request): bool => $request->method() === 'GET'
+            && str_contains($request->url(), '/api/tactics/changes?type=League'),
+        fn (Request $request): bool => $request->method() === 'POST'
+            && str_ends_with($request->url(), '/api/tactics/changes'),
+    ]);
 });
 
 test('invalid variant or match type cannot send changes', function () {

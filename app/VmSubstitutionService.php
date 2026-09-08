@@ -249,6 +249,20 @@ final class VmSubstitutionService
             return $this->failure('The substitution plan could not be prepared.');
         }
 
+        return $this->pushPreparedPayloads($payloads, $matchType);
+    }
+
+    /**
+     * Push substitution payloads that were already built and validated from a
+     * selected optimizer variant.
+     *
+     * @param  list<array<string, mixed>>  $payloads
+     * @return array{created: int, skipped: int, error: string|null}
+     */
+    public function pushPreparedPayloads(array $payloads, string $matchType = 'League'): array
+    {
+        $this->validateMatchType($matchType);
+
         if ($payloads === []) {
             return $this->result();
         }

@@ -38,12 +38,26 @@ new #[Title('Wynik optymalizacji')] class extends Component
         }
 
         try {
-            $result = app(VmSubstitutionService::class)->pushPlan($rankedPlan['plan'], $this->tacticsMatchType);
-            $this->substitutionsStatus = 'Zapisano zmian: '.$result['created'].'. Pominięto już zapisane: '.$result['skipped'].'.';
+            $substitutionService = app(VmSubstitutionService::class);
+            $payloads = $substitutionService->buildPayloads($rankedPlan['plan'], $this->tacticsMatchType);
+
+            if ($payloads === []) {
+                $this->substitutionsStatus = 'Wybrany wariant nie zawiera zmian do zapisania.';
+
+                return;
+            }
+
+            app(VmTacticsService::class)->pushVariantTactics($payloads, $this->tacticsMatchType);
+            $result = $substitutionService->pushPreparedPayloads($payloads, $this->tacticsMatchType);
 
             if ($result['error'] !== null) {
-                $this->addError('substitutions', $result['error']);
+                $this->substitutionsStatus = 'Skład i ławka zgodne z wariantem zostały zapisane w VM Managerze.';
+                $this->addError('substitutions', 'Zmiany nie zostały w pełni zapisane: '.$result['error']);
+
+                return;
             }
+
+            $this->substitutionsStatus = 'Zapisano skład i ławkę zgodne z wariantem. Dodano zmian: '.$result['created'].'. Pominięto już zapisane: '.$result['skipped'].'.';
         } catch (\InvalidArgumentException $exception) {
             $this->addError('substitutions', $exception->getMessage());
         } catch (\Throwable) {
@@ -762,8 +776,8 @@ new #[Title('Wynik optymalizacji')] class extends Component
                 </div>
 
                 <flux:text class="mt-4 text-sm">
-                    Wysyłanie dodaje brakujące reguły dla wybranego typu meczu i zachowuje dotychczasowe zmiany.
-                    Przed wysłaniem ustaw w grze starterów i rezerwowych zgodnych z wybranym wariantem.
+                    Wysyłanie zapisuje pełną taktykę dla wybranego wariantu: zachowuje starterów z bieżącej taktyki,
+                    ustawia wymaganych rezerwowych i dopiero potem dodaje brakujące reguły zmian dla wybranego typu meczu.
                 </flux:text>
                 @if ($substitutionsStatus !== '')
                     <flux:text class="mt-3" role="status">{{ $substitutionsStatus }}</flux:text>
@@ -822,7 +836,7 @@ new #[Title('Wynik optymalizacji')] class extends Component
                                                 wire:loading.attr="disabled"
                                                 wire:target="pushSubstitutions"
                                                 variant="primary"
-                                            >Wyślij zmiany do gry</flux:button>
+                                            >Wyślij skład i zmiany do gry</flux:button>
                                         @endif
                                     </div>
                                 </div>
@@ -971,7 +985,7 @@ new #[Title('Wynik optymalizacji')] class extends Component
         <div class="space-y-4">
             <flux:heading size="lg">Wysłać skład do gry?</flux:heading>
             <flux:text class="text-zinc-600 dark:text-zinc-300">
-                Zoptymalizowany skład (7 na boisku + 5 rezerwowych o najniższych paskach) zostanie zapisany w VM Managerze jako taktyka: {{ $this->tacticsMatchTypeOptions[$tacticsMatchType] ?? $tacticsMatchType }}. Ustawienia bloku zostaną zachowane z aktualnej taktyki w grze.
+                Zoptymalizowany pierwszy skład i aktualna ławka rezerwowych zostaną zapisane w VM Managerze jako taktyka: {{ $this->tacticsMatchTypeOptions[$tacticsMatchType] ?? $tacticsMatchType }}. Ustawienia bloku zostaną zachowane z aktualnej taktyki w grze.
             </flux:text>
         </div>
 

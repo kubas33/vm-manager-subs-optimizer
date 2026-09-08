@@ -261,3 +261,75 @@ The repository uses the standard five-role triage label vocabulary. See `docs/ag
 ### Domain docs
 
 Domain documentation uses a single-context layout. See `docs/agents/domain.md`.
+
+
+<!-- terra-luna-orchestration:start v3 -->
+## Terra + Luna feature orchestration
+
+Large features use one root orchestrator and bounded role-specific Luna subagents.
+
+### Root ownership
+
+- Prefer GPT-5.6 Terra for the root orchestrator.
+- The root owns architecture, ExecPlan quality, dependency ordering, shared/public contracts, cross-cutting decisions, integration, and final acceptance.
+- Subagents execute bounded work. They do not own feature architecture or final acceptance.
+
+### Managed Luna roles
+
+- `code_explorer`: repository reconnaissance, Luna `xhigh`, behaviorally read-only.
+- `domain_worker`: bounded domain implementation, Luna `xhigh`.
+- `domain_deep_worker`: difficult bounded domain implementation, Luna `max`.
+- `laravel_worker`: bounded Laravel implementation, Luna `xhigh`.
+- `laravel_deep_worker`: difficult bounded Laravel implementation, Luna `max`.
+- `angular_worker`: bounded Angular implementation, Luna `xhigh`.
+- `angular_deep_worker`: difficult bounded Angular implementation, Luna `max`.
+- `test_runner`: focused verification and failure analysis, Luna `high`.
+- `reviewer`: normal independent review, Luna `xhigh`, behaviorally read-only.
+- `deep_reviewer`: high-risk/release-critical independent review, Luna `max`, behaviorally read-only.
+
+### Mandatory spawn policy
+
+For every managed role:
+
+- pass the exact `agent_type`;
+- use `fork_turns="none"` by default;
+- never use `fork_turns="all"` with a managed role;
+- do not pass `model` or `reasoning_effort`; the selected role config owns those values;
+- do not silently fall back to a generic child or the parent model when routing fails;
+- make the delegated message self-contained because a fresh child does not receive full parent history.
+
+A positive partial fork may be used only when it is deliberately required and known to preserve custom-role overrides.
+
+### Normal vs deep role selection
+
+Use the normal worker for routine bounded work whose design is already fixed. Escalate to the matching deep worker for bounded tasks with non-trivial invariants, state transitions, concurrency/idempotency, data-integrity/migration risk, subtle framework behavior, difficult async/reactive behavior, or a large edge-case surface.
+
+Do not use a deep worker as a substitute for root-owned architecture decisions.
+
+### Feature Skills
+
+Prefer the reusable Skills when available:
+
+- `$terra-feature-plan`
+- `$terra-feature-implement`
+- `$terra-feature-status`
+- `$terra-feature-harden`
+- `$terra-routing-doctor`
+
+### Large-feature workflow
+
+1. Run reconnaissance and create/update an ExecPlan under `docs/exec-plans/`.
+2. Decompose work by responsibility and dependencies, with an explicit recommended role per task.
+3. Parallelize only dependency-independent tasks with non-overlapping file ownership.
+4. Inspect every meaningful delegated diff before dependent work proceeds.
+5. Run focused verification, integrate centrally, and update the ExecPlan when material facts change.
+6. Perform final hardening across the whole feature before declaring completion.
+
+### Delegation contract
+
+Every implementation task must state the objective, ExecPlan section, allowed scope, fixed contracts, satisfied dependencies, required verification, definition of done, and instruction to report out-of-scope dependencies instead of expanding the task.
+
+### Read-only roles
+
+Current Codex custom-role bounded overrides do not reliably apply a role-local sandbox mode. `code_explorer`, `reviewer`, and `deep_reviewer` therefore use a behavioral read-only instruction. The root must verify that those agents did not edit files.
+<!-- terra-luna-orchestration:end v3 -->
