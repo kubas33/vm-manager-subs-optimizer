@@ -134,11 +134,10 @@ final class VmTacticsService
     }
 
     /**
-     * Save the provided starting lineup with the reserves required by a
-     * selected substitution plan.
+     * Save the provided starting lineup and reserves.
      *
-     * @param  list<array<string, mixed>>  $substitutionPayloads
      * @param  list<int>  $starterVmPlayerIds
+     * @param  list<int>  $benchVmPlayerIds
      * @return array{
      *     matchType: string,
      *     matchId: int,
@@ -163,12 +162,11 @@ final class VmTacticsService
      * }
      */
     public function pushVariantTactics(
-        array $substitutionPayloads,
         array $starterVmPlayerIds,
+        array $benchVmPlayerIds,
         string $matchType = 'League',
         int $matchId = 0,
     ): array {
-        $benchVmPlayerIds = $this->substitutionVmPlayerIds($substitutionPayloads, 'playerIn');
         $api = app(VmManagerApiService::class);
         $starterVmPlayerIds = $this->normalizeStarterVmPlayerIds($starterVmPlayerIds);
 
@@ -273,29 +271,6 @@ final class VmTacticsService
         }
 
         return $payload;
-    }
-
-    /**
-     * @param  list<array<string, mixed>>  $substitutionPayloads
-     * @return list<int>
-     */
-    private function substitutionVmPlayerIds(array $substitutionPayloads, string $field): array
-    {
-        $playerIds = [];
-
-        foreach ($substitutionPayloads as $payload) {
-            $playerId = $this->positiveVmPlayerId($payload[$field] ?? null);
-
-            if ($playerId === null) {
-                throw new InvalidArgumentException('Wybrany wariant zmian zawiera nieprawidłowe ID zawodnika VM.');
-            }
-
-            if (! in_array($playerId, $playerIds, true)) {
-                $playerIds[] = $playerId;
-            }
-        }
-
-        return $playerIds;
     }
 
     /**

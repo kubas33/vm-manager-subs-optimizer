@@ -269,14 +269,18 @@ CTA ma jasno oznaczać zapis całego Wariantu, np. `Wyślij ten wariant do VM Ma
 - [x] (2026-09-09) Przeanalizować komponent wyniku, optymalizator oraz integrację zapisu VM.
 - [x] (2026-09-09) Uzgodnić podstawową terminologię Scenariusz wyniku meczu / Wariant planu zmian / Rekomendacja zmian.
 - [x] (2026-09-09) Porównać pierwotny ExecPlan z `OPTIMIZER_RESULT_UI_GUIDE.md` i skorygować kontrakt do modelu scenario-first.
-- [ ] Zweryfikować bieżące wystąpienia `scenarioSafetyMode`/worst-case i usunąć z nowego UI semantykę niepopartą faktyczną ścieżką obliczeń.
-- [ ] Utworzyć `VariantLineupComposer` i testy jego mapowania, pełnego składu, ławki oraz `send_blockers`.
-- [ ] Przygotować scenariuszowy view-model, stabilne `scenario_key`/`variant_key` i dwupoziomowy stan wyboru.
-- [ ] Przebudować result UI: compact input summary, scenario tabs, porównanie #1/#2/#3 i jeden panel szczegółów z `player_results`.
-- [ ] Przebudować akcję zastosowania Wariantu i zapis VM tak, aby używały jawnie skomponowanych starterów i ławki oraz obsługiwały `substitutions_count === 0`.
-- [ ] Zaktualizować `CONTEXT.md` o trwałe decyzje domenowe dotyczące pełnego wariantu/ławki, jeśli po implementacji nadal są właściwe dla domeny, a nie wyłącznie dla prezentacji.
-- [ ] Dodać/zmienić testy i przeprowadzić walidację focused oraz regresyjną.
-- [ ] Uzupełnić ten plan o wynik wdrożenia i retrospektywę.
+- [x] (2026-09-09) Usunąć z result UI mylącą semantykę `scenarioSafetyMode`/worst-case; ranking pozostaje niezależny dla każdego Scenariusza.
+- [x] (2026-09-09) Utworzyć `VariantLineupComposer` z pełnym składem, pięcioma miejscami ławki oraz `send_blockers`.
+- [x] (2026-09-09) Przygotować scenariuszowy view-model, stabilne klucze i dwupoziomowy stan wyboru.
+- [x] (2026-09-09) Przebudować result UI na compact summary, wybór scenariusza, porównanie #1/#2/#3 i panel aktywnego Wariantu.
+- [x] (2026-09-09) Przebudować akcję zastosowania Wariantu i kontrakt VM na jawnie skomponowanych starterów oraz ławkę, także dla `substitutions_count === 0`.
+- [x] (2026-09-09) Zaktualizować `CONTEXT.md` o prawidłowy status Wariantu bez zmian.
+- [x] (2026-09-09) Zastąpić bazowego startera wymaganego na ławce następnym dostępnym zawodnikiem tej samej pozycji.
+- [x] (2026-09-09) Wykluczyć nieoptymalizowanych starterów bazowych z puli kandydatów dla tej samej pozycji.
+- [x] (2026-09-09) Pokazać w UI liczbę reguł VM po scaleniu setów oraz osobno liczbę zdarzeń zmian w setach.
+- [x] (2026-09-09) Użyć skomponowanej ławki również w wariancie przekazywanym z modalu do VM.
+- [x] (2026-09-09) Uruchomić focused i regresyjną walidację composera, kontraktu VM i wyboru Wariantu w Dockerze.
+- [x] (2026-09-09) Uzupełnić ten plan o końcowy wynik walidacji i retrospektywę.
 
 ## Surprises & Discoveries
 
@@ -289,6 +293,10 @@ CTA ma jasno oznaczać zapis całego Wariantu, np. `Wyślij ten wariant do VM Ma
 - Wersja ExecPlanu znajdująca się na `main` przed tą korektą odfiltrowywała Warianty z `substitutions_count === 0`. Jest to sprzeczne z możliwością poprawnego zapisania samej pełnej taktyki i zostało wycofane w tej rewizji planu.
 - Aktualny `CONTEXT.md` definiuje podstawową terminologię i relacje scenariuszy/wariantów, ale nie zawiera jeszcze pełnego kontraktu siedmiu starterów i pięciu miejsc ławki. Nie oznaczać tej części dokumentacji jako ukończonej, dopóki faktycznie nie zostanie zaktualizowana.
 - Skupione testy dla wyniku i zapisu wcześniej przechodziły. Pełny `OptimizerFlowTest.php` ma istniejącą, niezwiązaną porażkę testu blokady zawodnika w nieoptymalizowanym slocie (`tests/Feature/OptimizerFlowTest.php:208`); nie należy naprawiać jej przypadkiem w ramach tego UI bez potwierdzenia, że nadal jest niezależna.
+- Bazowa rekomendacja może obsadzać nieoptymalizowany slot zawodnikiem, którego plan zmian wymaga na ławce. Composer musi wtedy zmienić wyłącznie ten bazowy slot na kolejnego dostępnego zawodnika tej samej pozycji; konflikt zawodnika wskazanego przez optymalizator nadal jest blockerem.
+- Przy analizie tylko części slotów danej pozycji pula optymalizatora nie może zawierać zawodników zajmujących pozostałe sloty bazowego składu. W przeciwnym razie pojedynczy zawodnik pojawia się na boisku i w planie zmian, a wysoki pasek treningu zastępczego jest artefaktem composera.
+- Jedna reguła VM może obejmować wiele setów dla tej samej pary `playerOut`/`playerIn`; liczba zdarzeń zmiany w planie może więc być większa niż liczba requestów tworzących reguły VM.
+- Model rankingu zawiera wewnętrzny klucz `plan`; composer musi dostać właśnie tę wewnętrzną strukturę. Przekazanie całego rankingu dawało poprawny plan zmian, ale pustą ławkę w modalu i payloadzie taktyki.
 
 ## Decision Log
 
@@ -308,10 +316,14 @@ CTA ma jasno oznaczać zapis całego Wariantu, np. `Wyślij ten wariant do VM Ma
 - Decision: Bieżący result UI odzwierciedla niezależne rankingi per Scenariusz; nie pokazuje safety/worst-case bez faktycznego wieloscenariuszowego rankingu. Rationale: UI nie może sugerować działania algorytmu, którego aktualna ścieżka nie wykonuje. Date/Author: 2026-09-09 / agent po review planu.
 - Decision: Limit rezerwowych `0` pozostawia startera, ale nie generuje rezerwowego ani zmiany dla pozycji. Rationale: limit dotyczy ławki, nie obsady na boisku. Date/Author: 2026-09-09 / użytkownik i agent.
 - Decision: Przyszłe ręczne wskazanie zawodnika będzie ograniczeniem przed optymalizacją. Rationale: musi wpływać spójnie na wszystkie Warianty, a nie być naprawą jednego wyniku po fakcie. Date/Author: 2026-09-09 / użytkownik i agent.
+- Decision: Rezerwowy wymagany przez plan ma pierwszeństwo przed nieoptymalizowanym starterem bazowym. Rationale: pełny Wariant nie może umieszczać jednego zawodnika jednocześnie na boisku i na ławce; composer wybiera następnego dostępnego gracza tej samej pozycji, zachowując decyzje optymalizatora. Date/Author: 2026-09-09 / agent po zgłoszeniu błędu.
+- Decision: Nieoptymalizowane sloty bazowe są zablokowane przed wyborem kandydatów dla tej samej pozycji. Rationale: jedna pozycja wskazana w formularzu oznacza jeden slot taktyczny, a nie wszystkie boiskowe wystąpienia tej pozycji. Date/Author: 2026-09-09 / agent po zgłoszeniu błędu.
+- Decision: Karty Wariantu i modal wysyłki pokazują liczbę reguł VM, a modal dodatkowo pokazuje liczbę zdarzeń w setach. Rationale: liczba utworzonych rekordów VM musi odpowiadać liczbie widocznej przed wysyłką, bez ukrywania przebiegu zmian w meczu. Date/Author: 2026-09-09 / agent po zgłoszeniu błędu.
+- Decision: Modal i wysyłka korzystają z tego samego skomponowanego Wariantu co panel aktywny. Rationale: pełna siódemka i ławka widoczne przed zatwierdzeniem muszą być identyczne z payloadem taktyki VM. Date/Author: 2026-09-09 / agent po zgłoszeniu błędu.
 
 ## Outcomes & Retrospective
 
-Plan został ponownie uzgodniony z docelowym guide'em UX. Najważniejsza korekta polega na przejściu z „płaskiej listy pogrupowanej scenariuszami” do rzeczywistego modelu scenario-first oraz na rozdzieleniu logiki składania pełnego Wariantu od komponentu Blade. Implementacja nie jest jeszcze wykonana. Po zakończeniu należy odnotować, czy `VariantLineupComposer` faktycznie zapewnia identyczny lineup/bench w renderze i payloadzie VM, czy przełączanie scenariuszy jest intuicyjne oraz czy użytkownik potrafi szybko odróżnić #2/#3 od rekomendacji #1.
+Plan został uzgodniony z docelowym guide'em UX. Wynik korzysta z modelu scenario-first, a `VariantLineupComposer` jest wspólnym źródłem pełnej siódemki, pięciu miejsc ławki i blockerów dla UI oraz zapisu do VM. Nieoptymalizowany starter bazowy nie trafia już do puli kandydatów dla drugiego slotu tej samej pozycji, a composer pozostaje zabezpieczeniem przed nielegalnym duplikatem w starym lub zewnętrznym planie. UI odróżnia reguły VM od zdarzeń przypisanych do poszczególnych setów, a modal przekazuje do VM tę samą skomponowaną ławkę, którą pokazuje użytkownikowi. W Dockerze przeszły testy wyniku, composera, kontraktu VM oraz błędnych danych wariantu.
 
 ## Context and Orientation
 
@@ -623,7 +635,9 @@ Przykład niesendowalnego Wariantu:
 - [ ] Stary UI safety/worst-case nie sugeruje wspólnego rankingu, jeżeli algorytm nadal działa niezależnie per scenariusz.
 - [ ] Przyszłe wymuszenia zawodników pozostają niewdrożone, ale model może je później przyjąć jako ograniczenie wejściowe.
 - [ ] Testy focused i regresyjne wykonane; każda baseline failure została potwierdzona względem stanu sprzed zmian.
-- [ ] `vendor/bin/pint --dirty --format agent` przechodzi.
-- [ ] `CONTEXT.md`, `Progress`, `Surprises & Discoveries`, `Decision Log` i `Outcomes & Retrospective` są zaktualizowane zgodnie z faktycznie wykonanym zakresem.
+- [x] `vendor/bin/pint --dirty --format agent` przechodzi.
+- [x] `CONTEXT.md`, `Progress`, `Surprises & Discoveries`, `Decision Log` i `Outcomes & Retrospective` są zaktualizowane zgodnie z faktycznie wykonanym zakresem.
 
 Plan Change Note: 2026-09-09 — pierwotny plan został poddany review względem `OPTIMIZER_RESULT_UI_GUIDE.md`. Zmieniono architekturę z płaskiego `rankedPlans` na scenario-first, dodano `selectedScenarioKey`, `VariantLineupComposer`, jawne `send_blockers`, różnice #2/#3 względem #1, `player_results` aktywnego Wariantu, compact input summary, weryfikację `scenarioSafetyMode`, wspólny model lineup/bench dla UI i VM oraz pełny rollback przez revert. Cofnięto wcześniejszą decyzję o odfiltrowaniu Wariantów z `substitutions_count === 0`: taki Wariant pozostaje legalny i może zapisać samą pełną taktykę.
+
+Plan Change Note: 2026-09-09 — wdrożenie dodało composer pełnego Wariantu, jawny kontrakt starterów/ławki dla VM i scenario-first result UI. Walidacja w Dockerze przeszła dla composera, kontraktu VM i wyboru Wariantu: 13 testów, 118 asercji; przeszedł też regresyjny test wykluczenia z `OptimizerFlowTest.php`.
