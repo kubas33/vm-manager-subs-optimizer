@@ -7,6 +7,7 @@ use App\VmTacticsService;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Tests\TestCase;
 
 uses(TestCase::class);
@@ -51,6 +52,76 @@ test('login posts credentials to the hardcoded API path and stores only an encry
         ->and($encryptedToken)->not->toBe($token)
         ->and(Crypt::decryptString($encryptedToken))->toBe($token)
         ->and(serialize(session()->all()))->not->toContain($password);
+});
+
+test('VM Manager requests log URL payload and response without secrets', function () {
+    config()->set('vm-manager.api_token', 'fallback-token');
+
+    Http::fake([
+        'https://faster.vm-manager.org/api/tactics' => Http::response(['ok' => true]),
+    ]);
+
+    $logger = Mockery::mock();
+    $logger->shouldReceive('debug')
+        ->once()
+        ->with('VM Manager request', Mockery::on(function (array $context): bool {
+            $serialized = json_encode($context);
+
+            return $context['method'] === 'POST'
+                && $context['url'] === 'https://faster.vm-manager.org/api/tactics'
+                && $context['payload']['matchType'] === 'League'
+                && $context['payload']['password'] === '[REDACTED]'
+                && $context['payload']['token'] === '[REDACTED]'
+                && ! str_contains((string) $serialized, 'fallback-token');
+        }));
+    $logger->shouldReceive('debug')
+        ->once()
+        ->with('VM Manager response', Mockery::on(function (array $context): bool {
+            return $context['method'] === 'POST'
+                && $context['url'] === 'https://faster.vm-manager.org/api/tactics'
+                && $context['status'] === 200
+                && $context['body'] === ['ok' => true];
+        }));
+    Log::shouldReceive('channel')
+        ->with('vm_manager')
+        ->twice()
+        ->andReturn($logger);
+
+    app(VmManagerApiService::class)->saveTactics([
+        'matchType' => 'League',
+        'password' => 'private-password',
+        'token' => 'private-token',
+    ]);
+});
+
+test('VM Manager GET request logs its complete URL and query parameters', function () {
+    config()->set('vm-manager.api_token', 'fallback-token');
+
+    Http::fake([
+        'https://faster.vm-manager.org/api/tactics*' => Http::response(['idPlayer1' => 101]),
+    ]);
+
+    $logger = Mockery::mock();
+    $logger->shouldReceive('debug')
+        ->once()
+        ->with('VM Manager request', Mockery::on(function (array $context): bool {
+            return $context['method'] === 'GET'
+                && $context['url'] === 'https://faster.vm-manager.org/api/tactics?type=Friendly&matchId=42'
+                && $context['query'] === ['type' => 'Friendly', 'matchId' => '42']
+                && $context['payload'] === [];
+        }));
+    $logger->shouldReceive('debug')
+        ->once()
+        ->with('VM Manager response', Mockery::on(function (array $context): bool {
+            return $context['url'] === 'https://faster.vm-manager.org/api/tactics?type=Friendly&matchId=42'
+                && $context['status'] === 200;
+        }));
+    Log::shouldReceive('channel')
+        ->with('vm_manager')
+        ->twice()
+        ->andReturn($logger);
+
+    app(VmManagerApiService::class)->getTactics('Friendly', 42);
 });
 
 test('login rejects invalid responses without exposing response data', function (int $status, array $body) {

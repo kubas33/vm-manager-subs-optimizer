@@ -73,6 +73,14 @@ return [
             'replace_placeholders' => true,
         ],
 
+        'vm_manager' => [
+            'driver' => 'daily',
+            'path' => storage_path('logs/vm-manager.log'),
+            'level' => env('VM_MANAGER_LOG_LEVEL', 'debug'),
+            'days' => env('VM_MANAGER_LOG_DAILY_DAYS', 14),
+            'replace_placeholders' => true,
+        ],
+
         'slack' => [
             'driver' => 'slack',
             'url' => env('LOG_SLACK_WEBHOOK_URL'),

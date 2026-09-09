@@ -7,6 +7,7 @@ use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use RuntimeException;
 use Throwable;
 
@@ -67,13 +68,10 @@ class VmManagerApi
         }
 
         try {
-            $response = $this->http
-                ->acceptJson()
-                ->asJson()
-                ->post($this->url(VmManagerEndpoints::LOGIN), [
-                    'login' => $login,
-                    'password' => $password,
-                ]);
+            $response = $this->request('POST', VmManagerEndpoints::LOGIN, [
+                'login' => $login,
+                'password' => $password,
+            ]);
         } catch (Throwable $exception) {
             report($exception);
 
@@ -112,12 +110,12 @@ class VmManagerApi
 
     public function get(string $endpoint, array $query = []): Response
     {
-        return $this->http->acceptJson()->get($this->url($endpoint), $query);
+        return $this->request('GET', $endpoint, $query);
     }
 
     public function post(string $endpoint, array $data = []): Response
     {
-        return $this->http->acceptJson()->asJson()->post($this->url($endpoint), $data);
+        return $this->request('POST', $endpoint, $data);
     }
 
     public function isAuthenticated(): bool
@@ -204,6 +202,127 @@ class VmManagerApi
     private function url(string $endpoint): string
     {
         return $this->apiUrl.'/'.ltrim($endpoint, '/');
+    }
+
+    /**
+     * @param  array<string, mixed>  $data
+     */
+    private function request(string $method, string $endpoint, array $data): Response
+    {
+        $url = $this->url($endpoint);
+        $startedAt = microtime(true);
+
+        $this->logRequest($method, $url, $data);
+
+        try {
+            $response = match ($method) {
+                'GET' => $this->http->acceptJson()->get($url, $data),
+                'POST' => $this->http->acceptJson()->asJson()->post($url, $data),
+                default => throw new RuntimeException("Unsupported VM Manager HTTP method [{$method}]."),
+            };
+        } catch (Throwable $exception) {
+            Log::channel('vm_manager')->error('VM Manager request failed', [
+                ...$this->requestContext($method, $url, $data),
+                'duration_ms' => $this->durationInMilliseconds($startedAt),
+                'exception' => $exception::class,
+                'error' => $exception->getMessage(),
+            ]);
+
+            throw $exception;
+        }
+
+        Log::channel('vm_manager')->debug('VM Manager response', [
+            ...$this->requestContext($method, $url, $data),
+            'status' => $response->status(),
+            'successful' => $response->successful(),
+            'duration_ms' => $this->durationInMilliseconds($startedAt),
+            'body' => $this->responseBody($url, $response),
+        ]);
+
+        return $response;
+    }
+
+    /**
+     * @param  array<string, mixed>  $data
+     */
+    private function logRequest(string $method, string $url, array $data): void
+    {
+        Log::channel('vm_manager')->debug('VM Manager request', $this->requestContext($method, $url, $data));
+    }
+
+    /**
+     * @param  array<string, mixed>  $data
+     * @return array<string, mixed>
+     */
+    private function requestContext(string $method, string $url, array $data): array
+    {
+        return [
+            'method' => $method,
+            'url' => $this->fullUrl($method, $url, $data),
+            'query' => $method === 'GET' ? $this->redactSensitiveData($data) : [],
+            'payload' => $method === 'POST' ? $this->redactSensitiveData($data) : [],
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $data
+     */
+    private function fullUrl(string $method, string $url, array $data): string
+    {
+        if ($method !== 'GET' || $data === []) {
+            return $url;
+        }
+
+        return $url.'?'.http_build_query($data);
+    }
+
+    private function durationInMilliseconds(float $startedAt): float
+    {
+        return round((microtime(true) - $startedAt) * 1000, 2);
+    }
+
+    private function responseBody(string $url, Response $response): mixed
+    {
+        if (str_ends_with($url, '/'.VmManagerEndpoints::LOGIN)) {
+            return '[REDACTED]';
+        }
+
+        $json = $response->json();
+
+        return $this->redactSensitiveData($json ?? $response->body());
+    }
+
+    private function redactSensitiveData(mixed $value, ?string $key = null): mixed
+    {
+        if ($key !== null && $this->isSensitiveKey($key)) {
+            return '[REDACTED]';
+        }
+
+        if (is_array($value)) {
+            $redacted = [];
+
+            foreach ($value as $itemKey => $itemValue) {
+                $redacted[$itemKey] = $this->redactSensitiveData($itemValue, (string) $itemKey);
+            }
+
+            return $redacted;
+        }
+
+        if (is_string($value) && strlen($value) > 10000) {
+            return substr($value, 0, 10000).'...[truncated]';
+        }
+
+        return $value;
+    }
+
+    private function isSensitiveKey(string $key): bool
+    {
+        $normalizedKey = strtolower(str_replace(['-', '_'], '', $key));
+
+        return str_contains($normalizedKey, 'password')
+            || str_contains($normalizedKey, 'token')
+            || str_contains($normalizedKey, 'authorization')
+            || str_contains($normalizedKey, 'secret');
     }
 
     private function persistAuthToken(string $token): void
