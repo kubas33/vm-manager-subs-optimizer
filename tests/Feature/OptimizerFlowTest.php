@@ -67,7 +67,7 @@ test('optimizer form stores normalized preset input and redirects to result page
 
     $this->get(route('optimizer.result'))
         ->assertOk()
-        ->assertSee('Skład dla wariantu 1')
+        ->assertSee('Wariant 1 dla Standardowe 3:0')
         ->assertSee('Rozgrywający')
         ->assertSee('Środkowy')
         ->assertSee('Preset')
@@ -76,11 +76,11 @@ test('optimizer form stores normalized preset input and redirects to result page
         ->assertSee('Pule rezerwowych')
         ->assertSee('Próg minimalnego paska: 20%')
         ->assertSee('Top warianty')
-        ->assertSee('Reguły dla wybranego scenariusza')
-        ->assertSee('Pierwszy skład wariantu 1')
+        ->assertSee('Wysyłanie zapisuje pełną taktykę')
+        ->assertSee('Starter: Setter Alpha')
         ->assertSee('Lista rezerwowych dla wariantu')
-        ->assertSee('Aktualizuję szczegóły wariantu')
-        ->assertSee('Zmarnowane')
+        ->assertSee('Szczegóły najlepszego wariantu')
+        ->assertSee('Strata')
         ->assertSee('Setter Alpha')
         ->assertSee('Middle Alpha');
 });
@@ -532,10 +532,28 @@ test('optimizer result page shows multiple variants for a large shared middle bl
         ],
     ]);
 
+    $component = Livewire::test('pages::optimizer.result');
+    $plan = $component->get('rankedPlans')[0]['plan'];
+    $benchPlayers = $component->instance()->variantBenchPlayers($plan);
+    $expectedBenchIds = collect($plan['slots'])
+        ->flatMap(fn (array $slot): array => collect($slot['sets'])
+            ->pluck('substitution_player')
+            ->filter()
+            ->pluck('id')
+            ->all())
+        ->unique()
+        ->values()
+        ->all();
+
+    expect($benchPlayers)->not->toBeEmpty()
+        ->and(collect($benchPlayers)->pluck('id')->all())->toBe($expectedBenchIds);
+
     $this->get(route('optimizer.result'))
         ->assertOk()
         ->assertSee('Wariant 2')
-        ->assertSee('wariantów');
+        ->assertSee('wariantów')
+        ->assertSee('Każdy wariant ma własny skład podstawowy, ławkę rezerwowych i definicje zmian.')
+        ->assertSee($benchPlayers[0]['name']);
 });
 
 test('optimizer result page shows safe preset breakdown across shorter scenarios', function () {
@@ -791,9 +809,13 @@ test('optimizer result page shows full lineup recommendation when roster is comp
         ->assertOk()
         ->assertSee('Propozycja składu')
         ->assertSee('Skład główny')
-        ->assertSee('Alternatywy')
+        ->assertDontSee('Alternatywy')
+        ->assertDontSee('Alternatywa 1')
         ->assertSee('Lineup Opposite Low')
-        ->assertSee('zmiany:')
-        ->assertSee('Alternatywa 1')
+        ->assertSee('Brak ID VM')
         ->assertSee('Suma pasków:');
+
+    $component = Livewire::test('pages::optimizer.result');
+
+    expect($component->get('lineupRecommendations')['recommendations'])->toHaveCount(1);
 });

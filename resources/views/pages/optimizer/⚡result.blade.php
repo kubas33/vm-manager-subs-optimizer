@@ -531,7 +531,7 @@ new #[Title('Wynik optymalizacji')] class extends Component
      *     is_complete: bool,
      *     missing_slots: list<array{slot: string, label: string, required: int, available: int}>,
      *     recommendations: list<array{
-     *         kind: 'primary'|'alternative',
+     *         kind: 'primary',
      *         total_training_bar: int,
      *         swap_description: ?string,
      *         changed_slot_keys: list<string>,
@@ -550,13 +550,70 @@ new #[Title('Wynik optymalizacji')] class extends Component
     #[Computed]
     public function lineupRecommendations(): array
     {
-        return (new LineupRecommendationService)->recommend(Player::query()->available()->get());
+        $recommendations = (new LineupRecommendationService)->recommend(Player::query()->available()->get());
+
+        $recommendations['recommendations'] = collect($recommendations['recommendations'] ?? [])
+            ->filter(fn (array $recommendation): bool => ($recommendation['kind'] ?? null) === 'primary')
+            ->values()
+            ->all();
+
+        return $recommendations;
     }
 
     #[Computed]
     public function hasLineupRecommendations(): bool
     {
         return $this->lineupRecommendations['recommendations'] !== [];
+    }
+
+    /**
+     * @param  array<string, mixed>  $plan
+     * @return list<array{id: int, name: string, position: string, training_bar: int}>
+     */
+    public function variantBenchPlayers(array $plan): array
+    {
+        $starterIds = collect($plan['slots'] ?? [])
+            ->filter(fn (mixed $slot): bool => is_array($slot))
+            ->pluck('starter.id')
+            ->filter(fn (mixed $id): bool => is_int($id) || (is_string($id) && ctype_digit($id)))
+            ->map(fn (mixed $id): int => (int) $id)
+            ->all();
+        $benchPlayers = [];
+
+        foreach ($plan['slots'] ?? [] as $slot) {
+            if (! is_array($slot)) {
+                continue;
+            }
+
+            foreach ($slot['sets'] ?? [] as $set) {
+                $player = is_array($set) ? ($set['substitution_player'] ?? null) : null;
+
+                if (! is_array($player)) {
+                    continue;
+                }
+
+                $playerId = $player['id'] ?? null;
+
+                if ((! is_int($playerId) && ! (is_string($playerId) && ctype_digit($playerId))) || (int) $playerId < 1) {
+                    continue;
+                }
+
+                $playerId = (int) $playerId;
+
+                if (in_array($playerId, $starterIds, true) || isset($benchPlayers[$playerId])) {
+                    continue;
+                }
+
+                $benchPlayers[$playerId] = [
+                    'id' => $playerId,
+                    'name' => (string) ($player['name'] ?? 'Nieznany zawodnik'),
+                    'position' => (string) ($player['position'] ?? ''),
+                    'training_bar' => (int) ($player['training_bar'] ?? 0),
+                ];
+            }
+        }
+
+        return array_values($benchPlayers);
     }
 };
 ?>
@@ -585,7 +642,7 @@ new #[Title('Wynik optymalizacji')] class extends Component
             <div>
                 <flux:heading size="lg">Propozycja składu</flux:heading>
                 <flux:text class="mt-1 max-w-2xl text-sm text-zinc-600 dark:text-zinc-300">
-                    Rekomendacja startowa na podstawie najniższych pasków treningowych w bazie. Do {{ \App\LineupRecommendationService::ALTERNATIVE_COUNT }} alternatyw — każda to pełny skład z kilkoma zmianami (zawodnik &lt;60% lub zbliżone paski ≥60%, ±{{ \App\LineupRecommendationService::ALTERNATIVE_SIMILAR_BAR_TOLERANCE }} p.p.).
+                    Rekomendacja startowa na podstawie najniższych pasków treningowych w bazie.
                 </flux:text>
             </div>
             <div class="flex flex-col gap-3 sm:flex-row sm:items-end">
@@ -665,10 +722,6 @@ new #[Title('Wynik optymalizacji')] class extends Component
                 $lineupRecommendationsList = collect($this->lineupRecommendations['recommendations']);
                 $lineupPrimaryIndex = $lineupRecommendationsList->search(fn (array $recommendation): bool => $recommendation['kind'] === 'primary');
                 $lineupPrimary = $lineupPrimaryIndex === false ? null : $lineupRecommendationsList[$lineupPrimaryIndex];
-                $lineupAlternatives = $lineupRecommendationsList
-                    ->map(fn (array $recommendation, int $index): array => $recommendation + ['_index' => $index])
-                    ->where('kind', 'alternative')
-                    ->values();
             @endphp
 
             @if ($lineupPrimary !== null)
@@ -721,75 +774,6 @@ new #[Title('Wynik optymalizacji')] class extends Component
                         Suma pasków: {{ $lineupPrimary['total_training_bar'] }}%
                     </flux:text>
                 </div>
-            @endif
-
-            @if ($lineupAlternatives->isNotEmpty())
-                <div class="mt-8">
-                    <flux:heading size="md">Alternatywy ({{ $lineupAlternatives->count() }})</flux:heading>
-
-                    <div class="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-                        @foreach ($lineupAlternatives as $alternativeIndex => $recommendation)
-                            <div wire:key="lineup-alternative-{{ $alternativeIndex }}" class="rounded-2xl border border-zinc-200 bg-zinc-50/70 p-4 dark:border-zinc-700 dark:bg-zinc-800/60">
-                                <div class="flex items-start justify-between gap-3">
-                                    <flux:text class="font-medium text-zinc-950 dark:text-zinc-50">Alternatywa {{ $alternativeIndex + 1 }}</flux:text>
-                                    @if ($this->lineupCanBePushed($recommendation))
-                                        <flux:button
-                                            size="sm"
-                                            variant="filled"
-                                            icon="arrow-up-tray"
-                                            wire:click="requestPushLineup({{ $recommendation['_index'] }})"
-                                            wire:loading.attr="disabled"
-                                        >
-                                            Wyślij do gry
-                                        </flux:button>
-                                    @elseif ($this->lineupRecommendations['is_complete'])
-                                        <flux:badge color="amber">Brak ID VM</flux:badge>
-                                    @endif
-                                </div>
-
-                                @if ($recommendation['swap_description'] !== null)
-                                    <flux:text class="mt-2 text-sm text-zinc-600 dark:text-zinc-300">{{ $recommendation['swap_description'] }}</flux:text>
-                                @endif
-
-                                <div class="mt-4 grid grid-cols-3 gap-3">
-                                    @foreach ($recommendation['slots'] as $slot)
-                                        <div
-                                            wire:key="lineup-alt-{{ $alternativeIndex }}-{{ $slot['key'] }}"
-                                            @class([
-                                                'rounded-xl border p-3 text-center',
-                                                'border-zinc-200 bg-white dark:border-zinc-700 dark:bg-zinc-900' => $slot['player'] !== null,
-                                                'border-dashed border-amber-300 bg-amber-50/50 dark:border-amber-700 dark:bg-amber-950/20' => $slot['player'] === null,
-                                                'col-start-2' => $slot['grid_column'] === 2 && $slot['grid_row'] === 3,
-                                                'ring-2 ring-emerald-500 dark:ring-emerald-400' => in_array($slot['key'], $recommendation['changed_slot_keys'] ?? [], true),
-                                            ])
-                                            style="grid-row: {{ $slot['grid_row'] }}; grid-column: {{ $slot['grid_column'] }};"
-                                        >
-                                            <flux:text class="text-xs uppercase tracking-[0.2em] text-zinc-500 dark:text-zinc-400">{{ $slot['abbreviation'] }}</flux:text>
-                                            <flux:text class="mt-1 text-sm font-medium text-zinc-950 dark:text-zinc-50">{{ $slot['player']?->name ?? '—' }}</flux:text>
-                                            @if ($slot['player'] !== null)
-                                                <flux:badge class="mt-2" :color="($slot['training_bar'] ?? 0) < \App\LineupRecommendationService::ALTERNATIVE_SWAP_MAX_TRAINING_BAR ? 'emerald' : 'sky'">{{ $slot['training_bar'] }}%</flux:badge>
-                                            @else
-                                                <flux:badge class="mt-2" color="amber">Brak</flux:badge>
-                                            @endif
-                                            <flux:text class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">{{ $slot['label'] }}</flux:text>
-                                        </div>
-                                    @endforeach
-                                </div>
-
-                                <flux:text class="mt-4 text-sm font-medium text-zinc-900 dark:text-zinc-100">
-                                    Suma pasków: {{ $recommendation['total_training_bar'] }}%
-                                </flux:text>
-                            </div>
-                        @endforeach
-                    </div>
-                </div>
-            @else
-                <flux:callout class="mt-6" icon="information-circle" color="zinc">
-                    <flux:callout.heading>Brak alternatyw</flux:callout.heading>
-                    <flux:callout.text>
-                        Nie znaleziono alternatywnych składów z co najmniej jedną sensowną zmianą względem składu głównego.
-                    </flux:callout.text>
-                </flux:callout>
             @endif
 
         @endif
@@ -914,9 +898,12 @@ new #[Title('Wynik optymalizacji')] class extends Component
                 <div class="flex items-center justify-between gap-4">
                 <div>
                     <flux:heading size="lg">Top warianty</flux:heading>
-                    <flux:text class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
-                        Każdy scenariusz wyniku jest optymalizowany osobno. Najpierw liczy się przyrost treningu, potem liczba zawodników poniżej progu {{ $this->fairnessThreshold }}% i bardziej wyrównany rozkład pasków.
-                    </flux:text>
+                <flux:text class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
+                    Każdy scenariusz wyniku jest optymalizowany osobno. Najpierw liczy się przyrost treningu, potem liczba zawodników poniżej progu {{ $this->fairnessThreshold }}% i bardziej wyrównany rozkład pasków.
+                </flux:text>
+                <flux:text class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
+                    Każdy wariant ma własny skład podstawowy, ławkę rezerwowych i definicje zmian.
+                </flux:text>
                 </div>
                 <div class="flex gap-2">
                     @if ($this->rankingScenario !== null)
@@ -929,7 +916,7 @@ new #[Title('Wynik optymalizacji')] class extends Component
                 </div>
 
                 <flux:text class="mt-4 text-sm">
-                    Wysyłanie zapisuje pełną taktykę dla wybranego wariantu: podstawowy skład z rekomendacji,
+                    Wysyłanie zapisuje pełną taktykę dla wybranego wariantu: jego skład podstawowy,
                     wymaganych rezerwowych i dopiero potem reguły zmian dla wybranego typu meczu.
                 </flux:text>
                 @if ($substitutionsStatus !== '')
@@ -995,6 +982,27 @@ new #[Title('Wynik optymalizacji')] class extends Component
                                 </div>
 
                                 @php($scenarioResults = $rankedPlan['scenario_results'] ?? [])
+
+                                <div class="mt-4 rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-700 dark:bg-zinc-900">
+                                    <div class="flex items-center justify-between gap-3">
+                                        <flux:text class="font-medium text-zinc-950 dark:text-zinc-50">Lista rezerwowych dla wariantu</flux:text>
+                                        <flux:badge color="sky">{{ count($this->variantBenchPlayers($rankedPlan['plan'])) }}</flux:badge>
+                                    </div>
+
+                                    @if ($this->variantBenchPlayers($rankedPlan['plan']) === [])
+                                        <flux:text class="mt-3 text-sm text-zinc-600 dark:text-zinc-300">Brak rezerwowych dla tego wariantu.</flux:text>
+                                    @else
+                                        <ul class="mt-3 grid gap-2 sm:grid-cols-2">
+                                            @foreach ($this->variantBenchPlayers($rankedPlan['plan']) as $benchPlayer)
+                                                <li wire:key="ranked-plan-{{ $index }}-bench-{{ $benchPlayer['id'] }}" class="rounded-xl border border-zinc-200 bg-zinc-50/70 px-3 py-2 dark:border-zinc-700 dark:bg-zinc-800/60">
+                                                    <flux:text class="text-sm font-medium text-zinc-950 dark:text-zinc-50">{{ $benchPlayer['name'] }}</flux:text>
+                                                    <flux:text class="mt-1 text-xs text-zinc-600 dark:text-zinc-300">{{ \App\Enums\PlayerPosition::tryFrom((string) ($benchPlayer['position'] ?? ''))?->label() ?? ($benchPlayer['position'] ?? '') }}</flux:text>
+                                                    <flux:text class="mt-1 text-xs text-zinc-600 dark:text-zinc-300">{{ $benchPlayer['training_bar'] }}%</flux:text>
+                                                </li>
+                                            @endforeach
+                                        </ul>
+                                    @endif
+                                </div>
 
                                 <div class="mt-4 space-y-3">
                                     @if (count($scenarioResults) > 1)
