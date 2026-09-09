@@ -241,3 +241,28 @@ test('players list can be filtered by position and status', function () {
         ->assertSee('Rozgrywający Aktywny')
         ->assertDontSee('Środkowy Nieaktywny');
 });
+
+test('players list can be filtered below a training bar threshold', function () {
+    $this->actingAs(User::factory()->create());
+
+    Player::factory()->create([
+        'name' => 'Pasek Ponizej Progu',
+        'training_bar' => 29,
+    ]);
+
+    Player::factory()->create([
+        'name' => 'Pasek Na Progu',
+        'training_bar' => 30,
+    ]);
+
+    Player::factory()->create([
+        'name' => 'Pasek Powyzej Progu',
+        'training_bar' => 31,
+    ]);
+
+    Livewire::test('pages::players.index')
+        ->set('filterTrainingBarBelow', 30)
+        ->assertSee('Pasek Ponizej Progu')
+        ->assertDontSee('Pasek Na Progu')
+        ->assertDontSee('Pasek Powyzej Progu');
+});

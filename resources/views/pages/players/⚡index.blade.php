@@ -13,6 +13,7 @@ new #[Title('Zawodnicy')] class extends Component
     public string $search = '';
     public string $filterPosition = '';
     public string $filterActive = 'all';
+    public string $filterTrainingBarBelow = '';
 
     public ?int $editingPlayerId = null;
     public int|string|null $vmPlayerId = null;
@@ -32,6 +33,8 @@ new #[Title('Zawodnicy')] class extends Component
     #[Computed]
     public function players()
     {
+        $trainingBarBelow = $this->trainingBarBelowThreshold();
+
         return Player::query()
             ->when($this->search !== '', function ($query): void {
                 $query->where('name', 'like', '%'.$this->search.'%');
@@ -44,6 +47,9 @@ new #[Title('Zawodnicy')] class extends Component
             })
             ->when($this->filterActive === 'inactive', function ($query): void {
                 $query->where('active', false);
+            })
+            ->when($trainingBarBelow !== null, function ($query) use ($trainingBarBelow): void {
+                $query->where('training_bar', '<', $trainingBarBelow);
             })
             ->orderBy('position')
             ->orderBy('name')
@@ -203,6 +209,17 @@ new #[Title('Zawodnicy')] class extends Component
         unset($this->players);
     }
 
+    public function updatedFilterTrainingBarBelow(): void
+    {
+        $this->resetValidation('filterTrainingBarBelow');
+
+        if ($this->filterTrainingBarBelow !== '' && $this->trainingBarBelowThreshold() === null) {
+            $this->addError('filterTrainingBarBelow', 'Podaj próg od 0 do 100.');
+        }
+
+        unset($this->players);
+    }
+
     public function updatedSearch(): void
     {
         unset($this->players);
@@ -248,6 +265,17 @@ new #[Title('Zawodnicy')] class extends Component
         $this->position = PlayerPosition::Setter->value;
         $this->active = true;
         $this->resetValidation();
+    }
+
+    protected function trainingBarBelowThreshold(): ?int
+    {
+        if ($this->filterTrainingBarBelow === '' || ! ctype_digit($this->filterTrainingBarBelow)) {
+            return null;
+        }
+
+        $threshold = (int) $this->filterTrainingBarBelow;
+
+        return $threshold >= 0 && $threshold <= 100 ? $threshold : null;
     }
 };
 ?>
@@ -362,7 +390,7 @@ new #[Title('Zawodnicy')] class extends Component
                         <flux:badge color="sky">{{ $this->players->count() }} wyników</flux:badge>
                     </div>
 
-                    <div class="grid gap-4 md:grid-cols-[1.2fr_0.8fr_0.8fr]">
+                    <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
                         <flux:input wire:model.live.debounce.300ms="search" label="Szukaj" placeholder="Szukaj po nazwie" />
                         <flux:select wire:model.live="filterPosition" label="Pozycja">
                             <option value="">Wszystkie pozycje</option>
@@ -375,6 +403,12 @@ new #[Title('Zawodnicy')] class extends Component
                             <option value="active">Tylko aktywni</option>
                             <option value="inactive">Tylko nieaktywni</option>
                         </flux:select>
+                        <div>
+                            <flux:input wire:model.live.debounce.300ms="filterTrainingBarBelow" label="Pasek poniżej (%)" type="number" min="0" max="100" placeholder="np. 30" />
+                            @error('filterTrainingBarBelow')
+                                <flux:text class="mt-1 text-sm text-rose-600 dark:text-rose-400">{{ $message }}</flux:text>
+                            @enderror
+                        </div>
                     </div>
                 </div>
             </div>
