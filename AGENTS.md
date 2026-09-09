@@ -263,7 +263,7 @@ The repository uses the standard five-role triage label vocabulary. See `docs/ag
 Domain documentation uses a single-context layout. See `docs/agents/domain.md`.
 
 
-<!-- terra-luna-orchestration:start v3 -->
+<!-- terra-luna-orchestration:start v4 -->
 ## Terra + Luna feature orchestration
 
 Large features use one root orchestrator and bounded role-specific Luna subagents.
@@ -274,16 +274,23 @@ Large features use one root orchestrator and bounded role-specific Luna subagent
 - The root owns architecture, ExecPlan quality, dependency ordering, shared/public contracts, cross-cutting decisions, integration, and final acceptance.
 - Subagents execute bounded work. They do not own feature architecture or final acceptance.
 
+### Planning contract
+
+- When creating or revising an ExecPlan, read `.agent/PLANS.md` completely when it exists and follow it to the letter.
+- Prefer `.agent/plans/execplan-template-v2.md` as the project skeleton.
+- Store active plans under `.agent/plans/` unless the repository planning contract explicitly says otherwise.
+- Keep ExecPlans self-contained, novice-guiding, outcome-focused, and resumable from the plan file alone.
+
 ### Managed Luna roles
 
-- `code_explorer`: repository reconnaissance, Luna `xhigh`, behaviorally read-only.
+- `code_explorer`: targeted repository reconnaissance, Luna `xhigh`, behaviorally read-only.
 - `domain_worker`: bounded domain implementation, Luna `xhigh`.
-- `domain_deep_worker`: difficult bounded domain implementation, Luna `max`.
+- `domain_deep_worker`: difficult bounded domain implementation, Luna `xhigh`.
 - `laravel_worker`: bounded Laravel implementation, Luna `xhigh`.
-- `laravel_deep_worker`: difficult bounded Laravel implementation, Luna `max`.
+- `laravel_deep_worker`: difficult bounded Laravel implementation, Luna `xhigh`.
 - `angular_worker`: bounded Angular implementation, Luna `xhigh`.
-- `angular_deep_worker`: difficult bounded Angular implementation, Luna `max`.
-- `test_runner`: focused verification and failure analysis, Luna `high`.
+- `angular_deep_worker`: difficult bounded Angular implementation, Luna `xhigh`.
+- `test_runner`: long-running verification jobs and failure triage, Luna `high`.
 - `reviewer`: normal independent review, Luna `xhigh`, behaviorally read-only.
 - `deep_reviewer`: high-risk/release-critical independent review, Luna `max`, behaviorally read-only.
 
@@ -296,15 +303,26 @@ For every managed role:
 - never use `fork_turns="all"` with a managed role;
 - do not pass `model` or `reasoning_effort`; the selected role config owns those values;
 - do not silently fall back to a generic child or the parent model when routing fails;
-- make the delegated message self-contained because a fresh child does not receive full parent history.
+- make the delegated message self-contained because a fresh child does not receive full parent history;
+- instruct managed children not to spawn their own subagents.
 
-A positive partial fork may be used only when it is deliberately required and known to preserve custom-role overrides.
+A positive partial fork may be used only when deliberately required and known to preserve custom-role overrides.
+
+### Current policy vs legacy orchestration text
+
+When this managed workflow/Skill is invoked, this managed block is the active agent-orchestration policy. Older project text that hard-codes an unconditional `code_explorer -> worker -> test_runner -> reviewer` chain, old model/effort values, or ritual broad reconnaissance is legacy orchestration guidance if it conflicts with this block.
+
+Preserve domain, architecture, testing, source-of-truth, and repository rules from older sections. Report orchestration conflicts rather than silently trying to obey incompatible policies. Do not delete or rewrite arbitrary legacy text without explicit user instruction.
+
+Role suggestions in older ExecPlans are advisory. Re-evaluate normal vs deep at execution time under the current policy unless the plan records a still-valid technical reason for escalation.
 
 ### Normal vs deep role selection
 
-Use the normal worker for routine bounded work whose design is already fixed. Escalate to the matching deep worker for bounded tasks with non-trivial invariants, state transitions, concurrency/idempotency, data-integrity/migration risk, subtle framework behavior, difficult async/reactive behavior, or a large edge-case surface.
+Use the normal worker for bounded work whose design and procedure are already fixed. Do not escalate merely because the feature/domain is important, large, or persistent.
 
-Do not use a deep worker as a substitute for root-owned architecture decisions.
+Escalate only when the delegated batch still contains unresolved non-trivial reasoning after authoritative plans/specs are read, such as contradictory invariants, difficult idempotency/atomicity, data-integrity/migration risk, subtle cross-subsystem state transitions, difficult async/reactive behavior, or a genuinely non-obvious edge-case surface.
+
+A detailed implementation companion/runbook is evidence in favor of the normal worker, but it does not forbid deep escalation when the specific batch still contains one of the difficult conditions above.
 
 ### Feature Skills
 
@@ -316,20 +334,56 @@ Prefer the reusable Skills when available:
 - `$terra-feature-harden`
 - `$terra-routing-doctor`
 
-### Large-feature workflow
+### Execution modes
 
-1. Run reconnaissance and create/update an ExecPlan under `docs/exec-plans/`.
-2. Decompose work by responsibility and dependencies, with an explicit recommended role per task.
-3. Parallelize only dependency-independent tasks with non-overlapping file ownership.
-4. Inspect every meaningful delegated diff before dependent work proceeds.
-5. Run focused verification, integrate centrally, and update the ExecPlan when material facts change.
-6. Perform final hardening across the whole feature before declaring completion.
+1. Detect execution mode before reconnaissance: SPEC-DRIVEN, PLAN-DRIVEN, or DISCOVERY-DRIVEN.
+2. In SPEC-DRIVEN work, skip broad reconnaissance unless the ExecPlan itself requires a bounded audit or a concrete code fact is unknown.
+3. Treat a plan-required Slice 0 audit as real milestone work, not as ritual rediscovery.
+4. In PLAN-DRIVEN work, use targeted reconnaissance only for named gaps.
+5. In DISCOVERY-DRIVEN work, reconcile repository facts and repair/create the ExecPlan before broad implementation.
+
+### Batch budget
+
+- Preserve dependency/verification boundaries already present in the ExecPlan.
+- For SPEC-DRIVEN work, default to one slice or at most two tightly coupled adjacent slices per implementation batch.
+- Do not collapse several dependent slices into one worker merely because they share a subsystem.
+- Split before new persistent/public contracts, migrations, due-consumer/executor boundaries, cross-subsystem integration seams, or large independent test surfaces.
+- A deep worker still receives a bounded batch; deep does not mean “implement the entire milestone”.
+
+### Wait discipline
+
+After spawning a child:
+
+- prefer one long wait for the current phase;
+- do not repeatedly call `wait_agent`/interaction only to learn that the child is still running;
+- a no-result wait is not new evidence and should not trigger a new root reasoning/status cycle;
+- retry only when runtime/tool limits require it, a concrete decision/finding needs input, the child appears genuinely stalled, or the user asks for status;
+- do not emit repetitive progress messages while a healthy child is simply working.
+
+### Verification ownership
+
+- Implementation workers run focused tests/checks that directly prove their assigned batch.
+- Do not make the worker run a broad/full suite merely for reassurance when an independent `test_runner` checkpoint is planned.
+- Root runs predictably short, low-output checks with compact output.
+- `test_runner` owns long subsystem/full suites, builds, headless/catalog/acceptance gates, and difficult failure triage.
+- Avoid running the same broad gate in both worker and `test_runner` unless independence is explicitly required or later code changes made the first evidence stale.
+- Do not repeat a fresh accepted pre-implementation baseline without a concrete reason.
+
+### Review policy
+
+- Start independent review only after the implementation batch is stable.
+- Scope normal `reviewer` to the batch, affected acceptance criteria, relevant contracts, and related tests.
+- Reserve `deep_reviewer` for genuinely high-risk/final hardening, not because an older plan mentions it by default.
+- On real review FAIL, block dependent slices, issue a minimal repair packet, run focused repair tests, then perform targeted independent verification and re-review.
+- A second verification/review pass after changed code is valid evidence; repeating unaffected broad gates is not.
 
 ### Delegation contract
 
-Every implementation task must state the objective, ExecPlan section, allowed scope, fixed contracts, satisfied dependencies, required verification, definition of done, and instruction to report out-of-scope dependencies instead of expanding the task.
+Every implementation task must state the objective, ExecPlan section, allowed scope, fixed contracts, satisfied dependencies, relevant files/symbols, focused verification, definition of done, and instruction to report out-of-scope dependencies instead of expanding the task.
+
+Repair packets should contain only the concrete findings, affected contracts/files, required regressions, and acceptance condition rather than forcing a full milestone rediscovery.
 
 ### Read-only roles
 
 Current Codex custom-role bounded overrides do not reliably apply a role-local sandbox mode. `code_explorer`, `reviewer`, and `deep_reviewer` therefore use a behavioral read-only instruction. The root must verify that those agents did not edit files.
-<!-- terra-luna-orchestration:end v3 -->
+<!-- terra-luna-orchestration:end v4 -->

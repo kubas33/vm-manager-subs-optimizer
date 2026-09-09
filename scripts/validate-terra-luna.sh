@@ -10,11 +10,11 @@ warnings=0
 expected_roles=(
   'code-explorer.toml:xhigh'
   'domain-worker.toml:xhigh'
-  'domain-deep-worker.toml:max'
+  'domain-deep-worker.toml:xhigh'
   'laravel-worker.toml:xhigh'
-  'laravel-deep-worker.toml:max'
+  'laravel-deep-worker.toml:xhigh'
   'angular-worker.toml:xhigh'
-  'angular-deep-worker.toml:max'
+  'angular-deep-worker.toml:xhigh'
   'test-runner.toml:high'
   'reviewer.toml:xhigh'
   'deep-reviewer.toml:max'
@@ -52,7 +52,7 @@ detect_windows_home_from_wsl() {
 check_home() {
   local home_root="$1"
   local label="$2"
-  local item file effort expected actual skill
+  local item file expected actual skill
 
   printf '\n%s runtime: %s\n' "$label" "$home_root"
 
@@ -81,18 +81,49 @@ check_home() {
       warnings=$((warnings + 1))
     fi
   done
+
+  if [[ -f "$home_root/.agents/skills/terra-feature-plan/references/PLANS.md" ]]; then
+    printf 'OK   skill terra-feature-plan bundled PLANS.md fallback\n'
+  else
+    printf 'WARN skill terra-feature-plan missing bundled PLANS.md fallback\n'
+    warnings=$((warnings + 1))
+  fi
+}
+
+check_legacy_orchestration() {
+  local agents="$PROJECT_ROOT/AGENTS.md"
+  local tmp
+  [[ -f "$agents" ]] || return 0
+  tmp="$(mktemp)"
+  awk '
+    /<!-- terra-luna-orchestration:start v[0-9]+ -->/ { in_block=1; next }
+    /<!-- terra-luna-orchestration:end v[0-9]+ -->/ { in_block=0; next }
+    !in_block { print }
+  ' "$agents" > "$tmp"
+
+  if grep -Eq 'Kolejność faz \(ściśle\)|Standardowy przepływ dla większej zmiany|Twarde reguły orkiestracji Sol' "$tmp"; then
+    printf 'WARN project AGENTS.md contains legacy hard-coded orchestration outside the managed block\n'
+    warnings=$((warnings + 1))
+  else
+    printf 'OK   project no known legacy hard-coded orchestration conflict detected\n'
+  fi
+  rm -f "$tmp"
 }
 
 require_project_file 'AGENTS.md'
-require_project_file 'docs/exec-plans/TEMPLATE.terra-luna.md'
+require_project_file '.agent/PLANS.md'
+require_project_file '.agent/plans/execplan-template-v2.md'
 require_project_file 'docs/codex/terra-luna-orchestration.md'
+require_project_file 'scripts/validate-terra-luna.sh'
 
-if grep -Fq '<!-- terra-luna-orchestration:start v3 -->' "$PROJECT_ROOT/AGENTS.md" 2>/dev/null; then
-  printf 'OK   project AGENTS.md managed v3 block\n'
+if grep -Fq '<!-- terra-luna-orchestration:start v4 -->' "$PROJECT_ROOT/AGENTS.md" 2>/dev/null; then
+  printf 'OK   project AGENTS.md managed v4 block\n'
 else
-  printf 'WARN project AGENTS.md does not contain managed v3 block\n'
+  printf 'WARN project AGENTS.md does not contain managed v4 block\n'
   warnings=$((warnings + 1))
 fi
+
+check_legacy_orchestration
 
 if [[ -n "${HOME:-}" ]]; then
   check_home "$HOME" 'WSL/current-user'
