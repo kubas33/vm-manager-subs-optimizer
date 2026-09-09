@@ -111,22 +111,11 @@ final class VmTacticsService
         int $matchId = 0,
     ): array {
         $api = app(VmManagerApiService::class);
-
-        try {
-            $existing = $api->getTactics($matchType, $matchId);
-        } catch (Throwable $exception) {
-            if ($exception instanceof RuntimeException) {
-                throw $exception;
-            }
-
-            $existing = [];
-        }
-
         $starterVmPlayerIds = $this->starterVmPlayerIds($recommendation);
         $payload = $this->buildPayloadFromVmPlayerIds(
             starterVmPlayerIds: $starterVmPlayerIds,
-            benchVmPlayerIds: $this->benchVmPlayerIdsFromTactics($existing, $starterVmPlayerIds),
-            blockSettings: $existing,
+            benchVmPlayerIds: $this->benchVmPlayerIdsFromPlayers($availablePlayers, $starterVmPlayerIds),
+            blockSettings: [],
             matchType: $matchType,
             matchId: $matchId,
         );
@@ -145,10 +134,11 @@ final class VmTacticsService
     }
 
     /**
-     * Save the current VM starting lineup with the reserves required by a
+     * Save the provided starting lineup with the reserves required by a
      * selected substitution plan.
      *
      * @param  list<array<string, mixed>>  $substitutionPayloads
+     * @param  list<int>  $starterVmPlayerIds
      * @return array{
      *     matchType: string,
      *     matchId: int,
@@ -174,34 +164,18 @@ final class VmTacticsService
      */
     public function pushVariantTactics(
         array $substitutionPayloads,
+        array $starterVmPlayerIds,
         string $matchType = 'League',
         int $matchId = 0,
     ): array {
         $benchVmPlayerIds = $this->substitutionVmPlayerIds($substitutionPayloads, 'playerIn');
-        $playerOutVmPlayerIds = $this->substitutionVmPlayerIds($substitutionPayloads, 'playerOut');
         $api = app(VmManagerApiService::class);
-
-        try {
-            $existing = $api->getTactics($matchType, $matchId);
-        } catch (Throwable $exception) {
-            if ($exception instanceof RuntimeException) {
-                throw $exception;
-            }
-
-            throw new RuntimeException('VM Manager tactics request failed.');
-        }
-
-        $starterVmPlayerIds = $this->starterVmPlayerIdsFromTactics($existing);
-        $missingStarterVmPlayerIds = array_values(array_diff($playerOutVmPlayerIds, $starterVmPlayerIds));
-
-        if ($missingStarterVmPlayerIds !== []) {
-            throw new InvalidArgumentException('Starterzy bieżącej taktyki VM nie są zgodni z wybranym wariantem zmian.');
-        }
+        $starterVmPlayerIds = $this->normalizeStarterVmPlayerIds($starterVmPlayerIds);
 
         $payload = $this->buildPayloadFromVmPlayerIds(
             starterVmPlayerIds: $starterVmPlayerIds,
             benchVmPlayerIds: $benchVmPlayerIds,
-            blockSettings: $existing,
+            blockSettings: [],
             matchType: $matchType,
             matchId: $matchId,
         );
@@ -302,51 +276,6 @@ final class VmTacticsService
     }
 
     /**
-     * @param  array<string, mixed>  $tactics
-     * @return list<int>
-     */
-    private function starterVmPlayerIdsFromTactics(array $tactics): array
-    {
-        $starterVmPlayerIds = [];
-
-        foreach (range(1, self::STARTER_COUNT) as $slot) {
-            $playerId = $this->tacticsVmPlayerId($tactics, $slot);
-
-            if ($playerId === null) {
-                throw new InvalidArgumentException('Bieżąca taktyka VM nie zawiera pełnego pierwszego składu.');
-            }
-
-            $starterVmPlayerIds[] = $playerId;
-        }
-
-        if (count(array_unique($starterVmPlayerIds)) !== self::STARTER_COUNT) {
-            throw new InvalidArgumentException('Bieżąca taktyka VM zawiera zduplikowanych starterów.');
-        }
-
-        return $starterVmPlayerIds;
-    }
-
-    /**
-     * @param  array<string, mixed>  $tactics
-     * @param  list<int>  $starterVmPlayerIds
-     * @return list<int>
-     */
-    private function benchVmPlayerIdsFromTactics(array $tactics, array $starterVmPlayerIds): array
-    {
-        $benchVmPlayerIds = [];
-
-        foreach (range(self::STARTER_COUNT + 1, self::SQUAD_SIZE) as $slot) {
-            $playerId = $this->tacticsVmPlayerId($tactics, $slot);
-
-            if ($playerId !== null) {
-                $benchVmPlayerIds[] = $playerId;
-            }
-        }
-
-        return $this->normalizeBenchVmPlayerIds($benchVmPlayerIds, $starterVmPlayerIds);
-    }
-
-    /**
      * @param  list<array<string, mixed>>  $substitutionPayloads
      * @return list<int>
      */
@@ -402,11 +331,54 @@ final class VmTacticsService
     }
 
     /**
-     * @param  array<string, mixed>  $tactics
+     * @param  list<int>  $starterVmPlayerIds
+     * @return list<int>
      */
-    private function tacticsVmPlayerId(array $tactics, int $slot): ?int
+    private function normalizeStarterVmPlayerIds(array $starterVmPlayerIds): array
     {
-        return $this->positiveVmPlayerId($tactics['player'.$slot] ?? $tactics['idPlayer'.$slot] ?? null);
+        $normalizedStarterVmPlayerIds = [];
+
+        foreach ($starterVmPlayerIds as $playerId) {
+            $vmPlayerId = $this->positiveVmPlayerId($playerId);
+
+            if ($vmPlayerId === null) {
+                throw new InvalidArgumentException('Każdy starter musi mieć dodatnie ID VM.');
+            }
+
+            if (in_array($vmPlayerId, $normalizedStarterVmPlayerIds, true)) {
+                throw new InvalidArgumentException('Podstawowy skład nie może zawierać zduplikowanych zawodników.');
+            }
+
+            $normalizedStarterVmPlayerIds[] = $vmPlayerId;
+        }
+
+        if (count($normalizedStarterVmPlayerIds) !== self::STARTER_COUNT) {
+            throw new InvalidArgumentException('Podstawowy skład musi zawierać siedmiu zawodników.');
+        }
+
+        return $normalizedStarterVmPlayerIds;
+    }
+
+    /**
+     * @param  Collection<int, Player>|null  $availablePlayers
+     * @param  list<int>  $starterVmPlayerIds
+     * @return list<int>
+     */
+    private function benchVmPlayerIdsFromPlayers(?Collection $availablePlayers, array $starterVmPlayerIds): array
+    {
+        if ($availablePlayers === null) {
+            return [];
+        }
+
+        return $availablePlayers
+            ->filter(fn (Player $player): bool => $player->vm_player_id !== null)
+            ->reject(fn (Player $player): bool => in_array($player->vm_player_id, $starterVmPlayerIds, true))
+            ->sortBy(fn (Player $player): array => [$player->training_bar, $player->name, $player->id])
+            ->take(self::SQUAD_SIZE - self::STARTER_COUNT)
+            ->pluck('vm_player_id')
+            ->map(fn (int $playerId): int => $playerId)
+            ->values()
+            ->all();
     }
 
     private function positiveVmPlayerId(mixed $value): ?int

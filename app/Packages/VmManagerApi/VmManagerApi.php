@@ -118,6 +118,11 @@ class VmManagerApi
         return $this->request('POST', $endpoint, $data);
     }
 
+    public function delete(string $endpoint, array $query = []): Response
+    {
+        return $this->request('DELETE', $endpoint, $query);
+    }
+
     public function isAuthenticated(): bool
     {
         return $this->sessionToken() !== null;
@@ -218,6 +223,7 @@ class VmManagerApi
             $response = match ($method) {
                 'GET' => $this->http->acceptJson()->get($url, $data),
                 'POST' => $this->http->acceptJson()->asJson()->post($url, $data),
+                'DELETE' => $this->http->acceptJson()->delete($this->fullUrl($method, $url, $data)),
                 default => throw new RuntimeException("Unsupported VM Manager HTTP method [{$method}]."),
             };
         } catch (Throwable $exception) {
@@ -259,7 +265,7 @@ class VmManagerApi
         return [
             'method' => $method,
             'url' => $this->fullUrl($method, $url, $data),
-            'query' => $method === 'GET' ? $this->redactSensitiveData($data) : [],
+            'query' => in_array($method, ['GET', 'DELETE'], true) ? $this->redactSensitiveData($data) : [],
             'payload' => $method === 'POST' ? $this->redactSensitiveData($data) : [],
         ];
     }
@@ -269,7 +275,7 @@ class VmManagerApi
      */
     private function fullUrl(string $method, string $url, array $data): string
     {
-        if ($method !== 'GET' || $data === []) {
+        if (! in_array($method, ['GET', 'DELETE'], true) || $data === []) {
             return $url;
         }
 

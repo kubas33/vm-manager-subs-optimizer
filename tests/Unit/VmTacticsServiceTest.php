@@ -77,7 +77,7 @@ test('tactics payload maps court slots to player1 through player7', function () 
     ]);
 });
 
-test('tactics payload does not select the bench from the lowest training bars', function () {
+test('tactics payload can include reserves selected by training bar', function () {
     $recommendation = tacticsLineupRecommendation();
 
     $bench = collect([
@@ -91,14 +91,16 @@ test('tactics payload does not select the bench from the lowest training bars', 
 
     $payload = (new VmTacticsService)->buildPayload(
         $recommendation,
-        $bench->concat(collect($recommendation['slots'])->pluck('player')),
+        collect(),
+        [],
+        'League',
+        0,
+        $bench->sortBy('training_bar')->take(5)->pluck('vm_player_id')->all(),
     );
 
-    expect($payload['player8'])->toBeNull()
-        ->and($payload['player9'])->toBeNull()
-        ->and($payload['player10'])->toBeNull()
-        ->and($payload['player11'])->toBeNull()
-        ->and($payload['player12'])->toBeNull();
+    expect($payload['player8'])->toBe(202)
+        ->and($payload['player9'])->toBe(203)
+        ->and($payload['player12'])->toBe(201);
 });
 
 test('tactics payload rejects a starter without a VM player ID', function () {
@@ -113,79 +115,65 @@ test('tactics payload rejects a starter without a VM player ID', function () {
     ))->toThrow(InvalidArgumentException::class);
 });
 
-test('push recommendation posts the lineup and preserves existing block settings', function () {
+test('push recommendation posts the lineup and does not read existing tactics', function () {
     config()->set('vm-manager.api_url', 'https://faster.vm-manager.org');
     config()->set('vm-manager.api_token', 'tactics-token');
 
     Http::fake([
-        'https://faster.vm-manager.org/api/tactics*' => Http::sequence()
-            ->push([
-                'idPlayer1' => 999,
-                'block1' => 4,
-                'blockPassive1' => 2,
-                'block2' => 5,
-                'blockPassive2' => 3,
-                'block3' => 6,
-                'blockPassive3' => 1,
-            ])
-            ->push(['ok' => true]),
+        'https://faster.vm-manager.org/api/tactics*' => Http::response(['ok' => true]),
     ]);
 
     $recommendation = tacticsLineupRecommendation();
 
     (new VmTacticsService)->pushRecommendation($recommendation, collect($recommendation['slots'])->pluck('player'));
 
-    Http::assertSentInOrder([
-        function (Request $request): bool {
-            return $request->method() === 'GET'
-                && str_starts_with($request->url(), 'https://faster.vm-manager.org/api/tactics')
-                && $request['type'] === 'League'
-                && (string) $request['matchId'] === '0'
-                && $request->header('Authorization') === ['Bearer tactics-token'];
-        },
-        function (Request $request): bool {
-            return $request->method() === 'POST'
-                && $request->url() === 'https://faster.vm-manager.org/api/tactics'
-                && $request['matchType'] === 'League'
-                && $request['player1'] === 101
-                && $request['player4'] === 104
-                && $request['player7'] === 107
-                && $request['block1'] === 4
-                && $request['blockPassive3'] === 1
-                && $request->header('Authorization') === ['Bearer tactics-token'];
-        },
-    ]);
+    Http::assertSentCount(1);
+    Http::assertSent(function (Request $request): bool {
+        return $request->method() === 'POST'
+            && $request->url() === 'https://faster.vm-manager.org/api/tactics'
+            && $request['matchType'] === 'League'
+            && $request['player1'] === 101
+            && $request['player4'] === 104
+            && $request['player7'] === 107
+            && $request['block1'] === 7
+            && $request['blockPassive3'] === 0
+            && $request->header('Authorization') === ['Bearer tactics-token'];
+    });
 });
 
-test('variant tactics posts the current starting lineup with the selected plan reserves', function () {
+test('push recommendation sends local reserves without reading existing tactics', function () {
+    config()->set('vm-manager.api_url', 'https://faster.vm-manager.org');
+    config()->set('vm-manager.api_token', 'tactics-token');
+
+    Http::fake(['https://faster.vm-manager.org/api/tactics*' => Http::response(['ok' => true])]);
+
+    $reserve = Player::factory()->forPosition(PlayerPosition::Setter)->withVmPlayerId(201)->create([
+        'name' => 'Reserve Setter',
+        'training_bar' => 30,
+    ]);
+    $payload = (new VmTacticsService)->pushRecommendation(
+        tacticsLineupRecommendation(),
+        collect([$reserve]),
+    );
+
+    expect($payload['player8'])->toBe(201)
+        ->and($payload['player9'])->toBeNull();
+    Http::assertSentCount(1);
+});
+
+test('variant tactics posts the provided starting lineup with the selected plan reserves', function () {
     config()->set('vm-manager.api_url', 'https://faster.vm-manager.org');
     config()->set('vm-manager.api_token', 'tactics-token');
 
     Http::fake([
-        'https://faster.vm-manager.org/api/tactics*' => Http::sequence()
-            ->push([
-                'idPlayer1' => 101,
-                'idPlayer2' => 102,
-                'idPlayer3' => 103,
-                'idPlayer4' => 104,
-                'idPlayer5' => 105,
-                'idPlayer6' => 106,
-                'idPlayer7' => 107,
-                'block1' => 4,
-                'blockPassive1' => 2,
-                'block2' => 5,
-                'blockPassive2' => 3,
-                'block3' => 6,
-                'blockPassive3' => 1,
-            ])
-            ->push(['ok' => true]),
+        'https://faster.vm-manager.org/api/tactics*' => Http::response(['ok' => true]),
     ]);
 
     $payload = (new VmTacticsService)->pushVariantTactics([
         ['playerIn' => 206, 'playerOut' => 101],
         ['playerIn' => 202, 'playerOut' => 105],
         ['playerIn' => 206, 'playerOut' => 101],
-    ]);
+    ], [101, 102, 103, 104, 105, 106, 107]);
 
     expect($payload)->toMatchArray([
         'player1' => 101,
@@ -194,21 +182,20 @@ test('variant tactics posts the current starting lineup with the selected plan r
         'player9' => 202,
         'player10' => null,
         'player12' => null,
-        'block1' => 4,
-        'blockPassive3' => 1,
+        'block1' => 7,
+        'blockPassive3' => 0,
     ]);
 
-    Http::assertSentInOrder([
-        fn (Request $request): bool => $request->method() === 'GET'
-            && str_starts_with($request->url(), 'https://faster.vm-manager.org/api/tactics'),
-        fn (Request $request): bool => $request->method() === 'POST'
+    Http::assertSent(function (Request $request): bool {
+        return $request->method() === 'POST'
             && $request->url() === 'https://faster.vm-manager.org/api/tactics'
             && $request['player1'] === 101
             && $request['player7'] === 107
             && $request['player8'] === 206
             && $request['player9'] === 202
             && $request['player10'] === null
-            && $request['block1'] === 4
-            && $request['blockPassive3'] === 1,
-    ]);
+            && $request['block1'] === 7
+            && $request['blockPassive3'] === 0;
+    });
+    Http::assertSentCount(1);
 });

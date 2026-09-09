@@ -296,6 +296,83 @@ final class VmSubstitutionService
     }
 
     /**
+     * Delete every substitution change currently configured for a match type.
+     *
+     * The remote API requires each change ID in the DELETE path, so the current
+     * list is read first and then removed one record at a time.
+     *
+     * @return array{deleted: int, error: string|null}
+     */
+    public function deleteAllTacticsChanges(string $matchType = 'League'): array
+    {
+        $this->validateMatchType($matchType);
+
+        $api = app(VmManagerApiService::class);
+
+        try {
+            $existing = $api->listTacticsChanges($matchType);
+        } catch (RuntimeException $exception) {
+            return $this->deleteFailure($exception->getMessage());
+        } catch (Throwable) {
+            return $this->deleteFailure('Nie udało się połączyć z VM Managerem podczas odczytu zmian.');
+        }
+
+        $changeIds = [];
+
+        foreach ($existing as $index => $change) {
+            if (! is_array($change)) {
+                return $this->deleteFailure('VM Manager zwrócił nieprawidłową zmianę na pozycji '.($index + 1).'.');
+            }
+
+            $existingMatchType = $change['matchType'] ?? null;
+
+            if (is_string($existingMatchType) && $existingMatchType !== $matchType) {
+                continue;
+            }
+
+            $changeId = $this->positiveInteger($change['changeId'] ?? null);
+
+            if ($changeId === null) {
+                return $this->deleteFailure('VM Manager zwrócił zmianę bez prawidłowego ID.');
+            }
+
+            $changeIds[$changeId] = true;
+        }
+
+        $deleted = 0;
+
+        foreach (array_keys($changeIds) as $changeId) {
+            try {
+                $response = $api->deleteTacticsChange((int) $changeId, $matchType);
+            } catch (RuntimeException $exception) {
+                return [
+                    'deleted' => $deleted,
+                    'error' => $exception->getMessage(),
+                ];
+            } catch (Throwable) {
+                return [
+                    'deleted' => $deleted,
+                    'error' => 'Nie udało się połączyć z VM Managerem podczas usuwania zmian.',
+                ];
+            }
+
+            if ($this->responseReportsFailure($response)) {
+                return [
+                    'deleted' => $deleted,
+                    'error' => 'VM Manager odrzucił usunięcie zmiany.',
+                ];
+            }
+
+            $deleted++;
+        }
+
+        return [
+            'deleted' => $deleted,
+            'error' => null,
+        ];
+    }
+
+    /**
      * @param  list<array<string, mixed>>  $payloads
      * @return array{created: int, skipped: int, error: string|null}
      */
@@ -365,8 +442,8 @@ final class VmSubstitutionService
      */
     private function missingPayloads(array $payloads, array $existing, string $matchType): array
     {
-        /** @var array<string, array<int, true>> $existingSets */
-        $existingSets = [];
+        /** @var array<string, list<array{changeId: int|null, sets: array<int, true>}>> $existingChanges */
+        $existingChanges = [];
 
         foreach ($existing as $change) {
             if (! is_array($change)) {
@@ -388,13 +465,18 @@ final class VmSubstitutionService
             }
 
             $key = $playerOut.':'.$playerIn.':'.$activationPoint;
-            $existingSets[$key] ??= [];
+            $sets = [];
 
             for ($setNumber = 1; $setNumber <= self::MAX_SET_NUMBER; $setNumber++) {
                 if ($this->isEnabledFlag($change['set'.$setNumber] ?? null)) {
-                    $existingSets[$key][$setNumber] = true;
+                    $sets[$setNumber] = true;
                 }
             }
+
+            $existingChanges[$key][] = [
+                'changeId' => $this->positiveInteger($change['changeId'] ?? null),
+                'sets' => $sets,
+            ];
         }
 
         $missingPayloads = [];
@@ -402,22 +484,31 @@ final class VmSubstitutionService
 
         foreach ($payloads as $payload) {
             $key = $payload['playerOut'].':'.$payload['playerIn'].':'.$payload['matchStatePoints'];
-            $missingSets = [];
+            $requestedSets = [];
 
             for ($setNumber = 1; $setNumber <= self::MAX_SET_NUMBER; $setNumber++) {
-                if (($payload['set'.$setNumber] ?? 0) === 1 && ! isset($existingSets[$key][$setNumber])) {
-                    $missingSets[$setNumber] = true;
+                if (($payload['set'.$setNumber] ?? 0) === 1) {
+                    $requestedSets[$setNumber] = true;
                 }
             }
 
-            if ($missingSets === []) {
+            $existingForPair = $existingChanges[$key] ?? [];
+            $hasExactMatch = collect($existingForPair)
+                ->contains(fn (array $existing): bool => $existing['sets'] === $requestedSets);
+
+            if ($hasExactMatch) {
                 $skipped++;
 
                 continue;
             }
 
-            foreach (range(1, self::MAX_SET_NUMBER) as $setNumber) {
-                $payload['set'.$setNumber] = isset($missingSets[$setNumber]) ? 1 : 0;
+            $existingChangeId = collect($existingForPair)
+                ->pluck('changeId')
+                ->filter(fn (?int $changeId): bool => $changeId !== null)
+                ->first();
+
+            if (is_int($existingChangeId)) {
+                $payload['changeId'] = $existingChangeId;
             }
 
             $missingPayloads[] = $payload;
@@ -579,6 +670,17 @@ final class VmSubstitutionService
         return [
             'created' => 0,
             'skipped' => 0,
+            'error' => $error,
+        ];
+    }
+
+    /**
+     * @return array{deleted: int, error: string}
+     */
+    private function deleteFailure(string $error): array
+    {
+        return [
+            'deleted' => 0,
             'error' => $error,
         ];
     }

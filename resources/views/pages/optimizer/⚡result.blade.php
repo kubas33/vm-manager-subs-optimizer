@@ -47,7 +47,11 @@ new #[Title('Wynik optymalizacji')] class extends Component
                 return;
             }
 
-            app(VmTacticsService::class)->pushVariantTactics($payloads, $this->tacticsMatchType);
+            app(VmTacticsService::class)->pushVariantTactics(
+                $payloads,
+                $this->starterVmPlayerIdsForPlan($rankedPlan['plan']),
+                $this->tacticsMatchType,
+            );
             $result = $substitutionService->pushPreparedPayloads($payloads, $this->tacticsMatchType);
 
             if ($result['error'] !== null) {
@@ -57,10 +61,11 @@ new #[Title('Wynik optymalizacji')] class extends Component
                 return;
             }
 
-            $this->substitutionsStatus = 'Zapisano skład i ławkę zgodne z wariantem. Dodano zmian: '.$result['created'].'. Pominięto już zapisane: '.$result['skipped'].'.';
+            $this->substitutionsStatus = 'Zapisano skład i ławkę zgodne z wariantem. Zapisano zmian: '.$result['created'].'. Pominięto już zgodne: '.$result['skipped'].'.';
         } catch (\InvalidArgumentException $exception) {
             $this->addError('substitutions', $exception->getMessage());
-        } catch (\Throwable) {
+        } catch (\Throwable $exception) {
+            report($exception);
             $this->addError('substitutions', 'Nie udało się wysłać zmian. Sprawdź połączenie z VM Manager i zaloguj się na dashboardzie.');
         }
     }
@@ -70,13 +75,90 @@ new #[Title('Wynik optymalizacji')] class extends Component
         abort_unless(config('auth.disable_auth') || auth()->check(), 403);
     }
 
+    /**
+     * @param  array<string, mixed>  $plan
+     * @return list<int>
+     */
+    private function starterVmPlayerIdsForPlan(array $plan): array
+    {
+        $lineup = $this->lineupRecommendations;
+        $recommendation = $lineup['recommendations'][0] ?? null;
+
+        if (! ($lineup['is_complete'] ?? false) || ! is_array($recommendation)) {
+            throw new \InvalidArgumentException('Nie można wysłać wariantu bez kompletnego podstawowego składu.');
+        }
+
+        $slots = collect($recommendation['slots'] ?? [])->keyBy('key');
+        $planSlotsByPosition = collect($plan['slots'] ?? [])->groupBy(
+            fn (array $slot): string => (string) ($slot['position'] ?? '')
+        );
+        $starterIds = $planSlotsByPosition
+            ->flatMap(fn ($slots): array => $slots->pluck('starter.id')->filter()->map(fn (mixed $id): int => (int) $id)->all())
+            ->unique()
+            ->values()
+            ->all();
+        $players = Player::query()->available()->whereKey($starterIds)->get()->keyBy('id');
+
+        foreach ($planSlotsByPosition as $positionValue => $positionSlots) {
+            if ($positionValue === '') {
+                throw new \InvalidArgumentException('Wariant zmian zawiera slot bez pozycji.');
+            }
+
+            try {
+                $position = PlayerPosition::from($positionValue);
+            } catch (\ValueError) {
+                throw new \InvalidArgumentException('Wariant zmian zawiera nieprawidłową pozycję.');
+            }
+
+            $targetKeys = $slots
+                ->filter(fn (array $slot): bool => ($slot['player']?->position ?? null) === $position)
+                ->keys()
+                ->values()
+                ->all();
+
+            if (count($targetKeys) < $positionSlots->count()) {
+                throw new \InvalidArgumentException('Wariant zmian zawiera więcej slotów niż podstawowy skład.');
+            }
+
+            foreach ($positionSlots->values() as $index => $planSlot) {
+                $localPlayerId = (int) ($planSlot['starter']['id'] ?? 0);
+                $player = $players->get($localPlayerId);
+
+                if (! $player instanceof Player || $player->vm_player_id === null || $player->vm_player_id < 1) {
+                    throw new \InvalidArgumentException('Starter wariantu nie ma prawidłowego ID VM.');
+                }
+
+                $slotKey = $targetKeys[$index];
+                $slots->put($slotKey, [...$slots->get($slotKey), 'player' => $player]);
+            }
+        }
+
+        $starterVmPlayerIds = [];
+
+        foreach (VmTacticsService::COURT_SLOT_KEYS as $slotKey) {
+            $player = $slots->get($slotKey)['player'] ?? null;
+
+            if (! $player instanceof Player || $player->vm_player_id === null || $player->vm_player_id < 1) {
+                throw new \InvalidArgumentException('Podstawowy skład musi zawierać siedmiu zawodników z ID VM.');
+            }
+
+            $starterVmPlayerIds[] = (int) $player->vm_player_id;
+        }
+
+        return $starterVmPlayerIds;
+    }
+
     public string $tacticsMatchType = 'League';
 
     public bool $confirmingTacticsPush = false;
 
+    public bool $confirmingChangesDeletion = false;
+
     public ?int $pendingTacticsRecommendationIndex = null;
 
     public string $tacticsStatus = '';
+
+    public string $changesDeletionStatus = '';
 
     public function mount(): void
     {
@@ -123,6 +205,55 @@ new #[Title('Wynik optymalizacji')] class extends Component
     {
         $this->confirmingTacticsPush = false;
         $this->pendingTacticsRecommendationIndex = null;
+    }
+
+    public function requestDeleteAllChanges(): void
+    {
+        $this->authorizeVmAction();
+        $this->resetValidation('changesDeletion');
+        $this->changesDeletionStatus = '';
+        $this->validate(['tacticsMatchType' => ['required', Rule::in(array_keys($this->tacticsMatchTypeOptions))]]);
+        $this->confirmingChangesDeletion = true;
+    }
+
+    public function cancelDeleteAllChanges(): void
+    {
+        $this->confirmingChangesDeletion = false;
+        $this->resetValidation('changesDeletion');
+    }
+
+    public function deleteAllChanges(): void
+    {
+        $this->authorizeVmAction();
+        $this->resetValidation('changesDeletion');
+        $this->changesDeletionStatus = '';
+        $this->validate(['tacticsMatchType' => ['required', Rule::in(array_keys($this->tacticsMatchTypeOptions))]]);
+
+        try {
+            $result = app(VmSubstitutionService::class)->deleteAllTacticsChanges($this->tacticsMatchType);
+        } catch (\InvalidArgumentException $exception) {
+            $this->confirmingChangesDeletion = false;
+            $this->addError('changesDeletion', $exception->getMessage());
+
+            return;
+        } catch (\Throwable $exception) {
+            report($exception);
+            $this->confirmingChangesDeletion = false;
+            $this->addError('changesDeletion', 'Nie udało się usunąć zmian. Sprawdź połączenie z VM Managerem.');
+
+            return;
+        }
+
+        if ($result['error'] !== null) {
+            $this->confirmingChangesDeletion = false;
+            $this->changesDeletionStatus = 'Usunięto zmian: '.$result['deleted'].'.';
+            $this->addError('changesDeletion', 'Nie usunięto wszystkich zmian: '.$result['error']);
+
+            return;
+        }
+
+        $this->changesDeletionStatus = 'Usunięto zmian: '.$result['deleted'].'.';
+        $this->confirmingChangesDeletion = false;
     }
 
     public function confirmPushLineup(): void
@@ -468,6 +599,14 @@ new #[Title('Wynik optymalizacji')] class extends Component
                         Zarządzaj zawodnikami
                     </flux:button>
                 @endif
+                <flux:button
+                    variant="danger"
+                    icon="trash"
+                    wire:click="requestDeleteAllChanges"
+                    wire:loading.attr="disabled"
+                >
+                    Usuń wszystkie zmiany
+                </flux:button>
             </div>
         </div>
 
@@ -481,6 +620,20 @@ new #[Title('Wynik optymalizacji')] class extends Component
         @error('tactics')
             <flux:callout class="mt-6" icon="exclamation-triangle" color="red">
                 <flux:callout.heading>Nie wysłano składu</flux:callout.heading>
+                <flux:callout.text>{{ $message }}</flux:callout.text>
+            </flux:callout>
+        @enderror
+
+        @if ($changesDeletionStatus !== '')
+            <flux:callout class="mt-6" icon="check-circle" color="emerald">
+                <flux:callout.heading>Usunięto zmiany z VM Manager</flux:callout.heading>
+                <flux:callout.text>{{ $changesDeletionStatus }}</flux:callout.text>
+            </flux:callout>
+        @endif
+
+        @error('changesDeletion')
+            <flux:callout class="mt-6" icon="exclamation-triangle" color="red">
+                <flux:callout.heading>Nie usunięto wszystkich zmian</flux:callout.heading>
                 <flux:callout.text>{{ $message }}</flux:callout.text>
             </flux:callout>
         @enderror
@@ -776,8 +929,8 @@ new #[Title('Wynik optymalizacji')] class extends Component
                 </div>
 
                 <flux:text class="mt-4 text-sm">
-                    Wysyłanie zapisuje pełną taktykę dla wybranego wariantu: zachowuje starterów z bieżącej taktyki,
-                    ustawia wymaganych rezerwowych i dopiero potem dodaje brakujące reguły zmian dla wybranego typu meczu.
+                    Wysyłanie zapisuje pełną taktykę dla wybranego wariantu: podstawowy skład z rekomendacji,
+                    wymaganych rezerwowych i dopiero potem reguły zmian dla wybranego typu meczu.
                 </flux:text>
                 @if ($substitutionsStatus !== '')
                     <flux:text class="mt-3" role="status">{{ $substitutionsStatus }}</flux:text>
@@ -985,7 +1138,7 @@ new #[Title('Wynik optymalizacji')] class extends Component
         <div class="space-y-4">
             <flux:heading size="lg">Wysłać skład do gry?</flux:heading>
             <flux:text class="text-zinc-600 dark:text-zinc-300">
-                Zoptymalizowany pierwszy skład i aktualna ławka rezerwowych zostaną zapisane w VM Managerze jako taktyka: {{ $this->tacticsMatchTypeOptions[$tacticsMatchType] ?? $tacticsMatchType }}. Ustawienia bloku zostaną zachowane z aktualnej taktyki w grze.
+                Zoptymalizowany pierwszy skład i rezerwy zostaną zapisane w VM Managerze jako taktyka: {{ $this->tacticsMatchTypeOptions[$tacticsMatchType] ?? $tacticsMatchType }}. Ustawienia bloku pochodzą z konfiguracji aplikacji.
             </flux:text>
         </div>
 
@@ -998,6 +1151,27 @@ new #[Title('Wynik optymalizacji')] class extends Component
 
             <flux:button variant="primary" wire:click="confirmPushLineup" wire:loading.attr="disabled">
                 Wyślij skład
+            </flux:button>
+        </div>
+    </flux:modal>
+
+    <flux:modal wire:model.self="confirmingChangesDeletion" class="max-w-lg">
+        <div class="space-y-4">
+            <flux:heading size="lg">Usunąć wszystkie zmiany?</flux:heading>
+            <flux:text class="text-zinc-600 dark:text-zinc-300">
+                Wszystkie zmiany dla typu meczu {{ $this->tacticsMatchTypeOptions[$tacticsMatchType] ?? $tacticsMatchType }} zostaną trwale usunięte z VM Managera.
+            </flux:text>
+        </div>
+
+        <div class="mt-6 flex justify-end gap-2">
+            <flux:modal.close>
+                <flux:button variant="filled" wire:click="cancelDeleteAllChanges">
+                    Anuluj
+                </flux:button>
+            </flux:modal.close>
+
+            <flux:button variant="danger" icon="trash" wire:click="deleteAllChanges" wire:loading.attr="disabled">
+                Usuń zmiany
             </flux:button>
         </div>
     </flux:modal>

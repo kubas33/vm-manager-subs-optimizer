@@ -123,6 +123,22 @@ class VmManagerApiService
         return $response;
     }
 
+    public function deleteTacticsChange(int $changeId, string $matchType = 'League'): Response
+    {
+        if ($changeId < 1) {
+            throw new RuntimeException('VM Manager change ID must be a positive integer.');
+        }
+
+        $api = (new VmManagerApi)->init()->authorize();
+        $response = $api->delete(VmManagerEndpoints::TACTICS_CHANGES.'/'.$changeId, [
+            'type' => $matchType,
+        ]);
+
+        $this->assertAuthorized($api, $response, 'Nie udało się usunąć zmiany w VM Managerze.');
+
+        return $response;
+    }
+
     public function timeout(): int
     {
         return (new VmManagerApi)->timeout();

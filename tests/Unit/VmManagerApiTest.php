@@ -124,6 +124,54 @@ test('VM Manager GET request logs its complete URL and query parameters', functi
     app(VmManagerApiService::class)->getTactics('Friendly', 42);
 });
 
+test('VM Manager DELETE request sends the change ID in the path and match type in the query', function () {
+    config()->set('vm-manager.api_token', 'fallback-token');
+
+    Http::fake([
+        'https://faster.vm-manager.org/api/tactics/changes/5847245?type=League' => Http::response([], 204),
+    ]);
+
+    app(VmManagerApiService::class)->deleteTacticsChange(5847245, 'League');
+
+    Http::assertSent(function (Request $request): bool {
+        return $request->method() === 'DELETE'
+            && $request->url() === 'https://faster.vm-manager.org/api/tactics/changes/5847245?type=League'
+            && $request->data() === []
+            && $request->header('Authorization') === ['Bearer fallback-token'];
+    });
+});
+
+test('VM Manager DELETE request logs its complete URL and query parameters', function () {
+    config()->set('vm-manager.api_token', 'fallback-token');
+
+    Http::fake([
+        'https://faster.vm-manager.org/api/tactics/changes/5847245?type=League' => Http::response([], 204),
+    ]);
+
+    $logger = Mockery::mock();
+    $logger->shouldReceive('debug')
+        ->once()
+        ->with('VM Manager request', Mockery::on(function (array $context): bool {
+            return $context['method'] === 'DELETE'
+                && $context['url'] === 'https://faster.vm-manager.org/api/tactics/changes/5847245?type=League'
+                && $context['query'] === ['type' => 'League']
+                && $context['payload'] === [];
+        }));
+    $logger->shouldReceive('debug')
+        ->once()
+        ->with('VM Manager response', Mockery::on(function (array $context): bool {
+            return $context['method'] === 'DELETE'
+                && $context['url'] === 'https://faster.vm-manager.org/api/tactics/changes/5847245?type=League'
+                && $context['status'] === 204;
+        }));
+    Log::shouldReceive('channel')
+        ->with('vm_manager')
+        ->twice()
+        ->andReturn($logger);
+
+    app(VmManagerApiService::class)->deleteTacticsChange(5847245, 'League');
+});
+
 test('login rejects invalid responses without exposing response data', function (int $status, array $body) {
     $secret = 'response-secret-value';
 
@@ -224,30 +272,14 @@ test('training bar import uses the authenticated session token before its legacy
     });
 });
 
-test('tactics authentication failure while loading existing changes stops the write', function () {
+test('invalid tactics recommendation stops before any external request', function () {
     session()->put('vm_auth.token', Crypt::encryptString('session-token'));
 
-    Http::fake(function (Request $request) {
-        if ($request->method() === 'GET') {
-            return Http::response([
-                'message' => 'response-secret-value',
-            ], 401);
-        }
+    Http::fake();
 
-        return Http::response(['ok' => true]);
-    });
+    expect(fn () => app(VmTacticsService::class)->pushRecommendation([]))
+        ->toThrow(InvalidArgumentException::class, 'Lineup slot [setter] is empty.');
 
-    $exception = null;
-
-    try {
-        app(VmTacticsService::class)->pushRecommendation([]);
-    } catch (RuntimeException $caught) {
-        $exception = $caught;
-    }
-
-    expect($exception)->toBeInstanceOf(RuntimeException::class)
-        ->and($exception?->getMessage())->toBe('VM Manager authentication expired. Please log in again.')
-        ->and($exception?->getMessage())->not->toContain('response-secret-value')
-        ->and(Http::recorded())->toHaveCount(1)
-        ->and(app(VmManagerApiService::class)->isAuthenticated())->toBeFalse();
+    expect(Http::recorded())->toHaveCount(0)
+        ->and(app(VmManagerApiService::class)->isAuthenticated())->toBeTrue();
 });
