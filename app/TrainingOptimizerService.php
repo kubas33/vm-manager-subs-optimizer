@@ -290,7 +290,7 @@ final class TrainingOptimizerService
      */
     protected function shouldUseGreedyPlanner(array $slotDefinitions): bool
     {
-        return collect($slotDefinitions)
+        return count($slotDefinitions) >= 4 || collect($slotDefinitions)
             ->groupBy(fn (array $slotDefinition): string => $slotDefinition['position']->value)
             ->contains(fn ($group): bool => count($group->first()['players'] ?? []) > 5);
     }

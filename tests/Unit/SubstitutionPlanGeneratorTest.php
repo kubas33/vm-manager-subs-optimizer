@@ -117,18 +117,26 @@ test('substitution plan generator excludes injured players from candidates', fun
     }
 });
 
-test('substitution plan generator rejects more than three analyzed slots', function () {
+test('substitution plan generator rejects more than five analyzed slots', function () {
     $scenario = MatchScenario::fromInput('25:20, 25:18, 25:22', 'Standardowe 3:0');
 
     $setter = Player::factory()->make(['id' => 30, 'position' => PlayerPosition::Setter]);
-
-    (new SubstitutionPlanGenerator)->generate([
+    $slotDefinitions = [
         ['slot_number' => 1, 'position' => PlayerPosition::Setter, 'players' => [$setter]],
         ['slot_number' => 2, 'position' => PlayerPosition::Setter, 'players' => [$setter]],
         ['slot_number' => 3, 'position' => PlayerPosition::Setter, 'players' => [$setter]],
         ['slot_number' => 4, 'position' => PlayerPosition::Setter, 'players' => [$setter]],
-    ], $scenario);
-})->throws(InvalidArgumentException::class, 'Generator oczekuje od jednego do trzech analizowanych slotów.');
+        ['slot_number' => 5, 'position' => PlayerPosition::Setter, 'players' => [$setter]],
+        ['slot_number' => 6, 'position' => PlayerPosition::Setter, 'players' => [$setter]],
+    ];
+
+    $generator = new SubstitutionPlanGenerator;
+
+    expect(fn (): array => $generator->generate($slotDefinitions, $scenario))
+        ->toThrow(InvalidArgumentException::class, 'Generator oczekuje od jednego do pięciu analizowanych slotów.')
+        ->and(fn (): array => $generator->generateGreedy($slotDefinitions, $scenario))
+        ->toThrow(InvalidArgumentException::class, 'Generator oczekuje od jednego do pięciu analizowanych slotów.');
+});
 
 test('greedy generator supports three analyzed slots and point thresholds up to five', function () {
     $scenario = MatchScenario::fromInput('25:12, 25:14, 25:13', 'Łatwe 3:0');
@@ -153,4 +161,24 @@ test('greedy generator supports three analyzed slots and point thresholds up to 
     expect($plans)->not->toBeEmpty()
         ->and($plans[0]['slots'])->toHaveCount(3)
         ->and($thresholds->every(fn (int $threshold): bool => $threshold >= 1 && $threshold <= 5))->toBeTrue();
+});
+
+test('greedy generator supports five analyzed slots', function () {
+    $scenario = MatchScenario::fromInput('1:0, 1:0, 1:0', 'Krótki 3:0');
+    $setter = Player::factory()->make(['id' => 50, 'name' => 'Setter', 'position' => PlayerPosition::Setter]);
+    $outsideA = Player::factory()->make(['id' => 51, 'name' => 'Outside A', 'position' => PlayerPosition::OutsideHitter]);
+    $outsideB = Player::factory()->make(['id' => 52, 'name' => 'Outside B', 'position' => PlayerPosition::OutsideHitter]);
+    $middleA = Player::factory()->make(['id' => 53, 'name' => 'Middle A', 'position' => PlayerPosition::MiddleBlocker]);
+    $middleB = Player::factory()->make(['id' => 54, 'name' => 'Middle B', 'position' => PlayerPosition::MiddleBlocker]);
+
+    $plans = (new SubstitutionPlanGenerator)->generateGreedy([
+        ['slot_number' => 1, 'position' => PlayerPosition::Setter, 'players' => [$setter]],
+        ['slot_number' => 2, 'position' => PlayerPosition::OutsideHitter, 'players' => [$outsideA, $outsideB]],
+        ['slot_number' => 3, 'position' => PlayerPosition::OutsideHitter, 'players' => [$outsideA, $outsideB]],
+        ['slot_number' => 4, 'position' => PlayerPosition::MiddleBlocker, 'players' => [$middleA, $middleB]],
+        ['slot_number' => 5, 'position' => PlayerPosition::MiddleBlocker, 'players' => [$middleA, $middleB]],
+    ], $scenario);
+
+    expect($plans)->not->toBeEmpty()
+        ->and($plans[0]['slots'])->toHaveCount(5);
 });

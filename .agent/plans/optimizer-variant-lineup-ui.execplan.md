@@ -143,6 +143,8 @@ Przykład: jeśli optymalizowane są dwa miejsca środkowych, pierwszy slot tej 
 
 Implementacja powinna użyć istniejących definicji slotów/mappingu z optymalizatora lub obecnej poprawnej logiki, a nie tworzyć założenia `slot_number -> playerN`. Test obowiązkowo obejmuje co najmniej jedną pozycję występującą dwukrotnie.
 
+Wybór typu pozycji w formularzu jest rozwijany kanonicznie do jego fizycznych slotów: Przyjmujący i Środkowy zawsze dają po dwa sloty, a pozostałe typy po jednym. Powtórzenia typu są deduplikowane w kolejności pierwszego wystąpienia; pula rezerwowych i `candidate_limit` są wyliczane raz dla każdego distinct typu.
+
 ### Ławka
 
 - Model ławki ma dokładnie pięć miejsc VM.
@@ -281,6 +283,7 @@ CTA ma jasno oznaczać zapis całego Wariantu, np. `Wyślij ten wariant do VM Ma
 - [x] (2026-09-09) Użyć skomponowanej ławki również w wariancie przekazywanym z modalu do VM.
 - [x] (2026-09-09) Uruchomić focused i regresyjną walidację composera, kontraktu VM i wyboru Wariantu w Dockerze.
 - [x] (2026-09-09) Uzupełnić ten plan o końcowy wynik walidacji i retrospektywę.
+- [x] (2026-09-14) Skorygować normalizację wyboru pozycji do fizycznych slotów i wspólnych pul rezerwowych.
 
 ## Surprises & Discoveries
 
@@ -294,9 +297,11 @@ CTA ma jasno oznaczać zapis całego Wariantu, np. `Wyślij ten wariant do VM Ma
 - Aktualny `CONTEXT.md` definiuje podstawową terminologię i relacje scenariuszy/wariantów, ale nie zawiera jeszcze pełnego kontraktu siedmiu starterów i pięciu miejsc ławki. Nie oznaczać tej części dokumentacji jako ukończonej, dopóki faktycznie nie zostanie zaktualizowana.
 - Skupione testy dla wyniku i zapisu wcześniej przechodziły. Pełny `OptimizerFlowTest.php` ma istniejącą, niezwiązaną porażkę testu blokady zawodnika w nieoptymalizowanym slocie (`tests/Feature/OptimizerFlowTest.php:208`); nie należy naprawiać jej przypadkiem w ramach tego UI bez potwierdzenia, że nadal jest niezależna.
 - Bazowa rekomendacja może obsadzać nieoptymalizowany slot zawodnikiem, którego plan zmian wymaga na ławce. Composer musi wtedy zmienić wyłącznie ten bazowy slot na kolejnego dostępnego zawodnika tej samej pozycji; konflikt zawodnika wskazanego przez optymalizator nadal jest blockerem.
-- Przy analizie tylko części slotów danej pozycji pula optymalizatora nie może zawierać zawodników zajmujących pozostałe sloty bazowego składu. W przeciwnym razie pojedynczy zawodnik pojawia się na boisku i w planie zmian, a wysoki pasek treningu zastępczego jest artefaktem composera.
+- Przy analizie historycznego lub zewnętrznego payloadu obejmującego tylko część slotów danej pozycji pula optymalizatora nie może zawierać zawodników zajmujących pozostałe sloty bazowego składu. Bieżąca normalizacja formularza rozwija typy wieloslotowe do pełnego zestawu fizycznych slotów.
 - Jedna reguła VM może obejmować wiele setów dla tej samej pary `playerOut`/`playerIn`; liczba zdarzeń zmiany w planie może więc być większa niż liczba requestów tworzących reguły VM.
 - Model rankingu zawiera wewnętrzny klucz `plan`; composer musi dostać właśnie tę wewnętrzną strukturę. Przekazanie całego rankingu dawało poprawny plan zmian, ale pustą ławkę w modalu i payloadzie taktyki.
+- Normalizacja formularza traktowała dotąd każde wystąpienie selektora jako jeden slot. Kontrakt wymaga rozwinięcia typu Przyjmujący/Środkowy do dwóch fizycznych slotów, deduplikacji powtórzeń i zachowania jednej puli rezerwowych na typ.
+- Po rozwinięciu kombinacja Przyjmujący + Środkowy przekazuje cztery sloty do generatora. Generator dopuszcza od 1 do 5 slotów, a dla konfiguracji 4–5 slotów `TrainingOptimizerService` kieruje wykonanie do ograniczonego planera zachłannego, pozostawiając dotychczasowy wybór planera dla 1–3 slotów.
 
 ## Decision Log
 
@@ -317,13 +322,13 @@ CTA ma jasno oznaczać zapis całego Wariantu, np. `Wyślij ten wariant do VM Ma
 - Decision: Limit rezerwowych `0` pozostawia startera, ale nie generuje rezerwowego ani zmiany dla pozycji. Rationale: limit dotyczy ławki, nie obsady na boisku. Date/Author: 2026-09-09 / użytkownik i agent.
 - Decision: Przyszłe ręczne wskazanie zawodnika będzie ograniczeniem przed optymalizacją. Rationale: musi wpływać spójnie na wszystkie Warianty, a nie być naprawą jednego wyniku po fakcie. Date/Author: 2026-09-09 / użytkownik i agent.
 - Decision: Rezerwowy wymagany przez plan ma pierwszeństwo przed nieoptymalizowanym starterem bazowym. Rationale: pełny Wariant nie może umieszczać jednego zawodnika jednocześnie na boisku i na ławce; composer wybiera następnego dostępnego gracza tej samej pozycji, zachowując decyzje optymalizatora. Date/Author: 2026-09-09 / agent po zgłoszeniu błędu.
-- Decision: Nieoptymalizowane sloty bazowe są zablokowane przed wyborem kandydatów dla tej samej pozycji. Rationale: jedna pozycja wskazana w formularzu oznacza jeden slot taktyczny, a nie wszystkie boiskowe wystąpienia tej pozycji. Date/Author: 2026-09-09 / agent po zgłoszeniu błędu.
+- Decision: Nieoptymalizowane sloty bazowe są zablokowane przed wyborem kandydatów dla tej samej pozycji. Rationale: kanoniczny wybór typu pozycji rozwija się do wszystkich jego fizycznych slotów, a nie do liczby wystąpień selektora; powtórzenia typu deduplikują się w kolejności pierwszego wystąpienia. Date/Author: 2026-09-14 / agent po korekcie kontraktu.
 - Decision: Karty Wariantu i modal wysyłki pokazują liczbę reguł VM, a modal dodatkowo pokazuje liczbę zdarzeń w setach. Rationale: liczba utworzonych rekordów VM musi odpowiadać liczbie widocznej przed wysyłką, bez ukrywania przebiegu zmian w meczu. Date/Author: 2026-09-09 / agent po zgłoszeniu błędu.
 - Decision: Modal i wysyłka korzystają z tego samego skomponowanego Wariantu co panel aktywny. Rationale: pełna siódemka i ławka widoczne przed zatwierdzeniem muszą być identyczne z payloadem taktyki VM. Date/Author: 2026-09-09 / agent po zgłoszeniu błędu.
 
 ## Outcomes & Retrospective
 
-Plan został uzgodniony z docelowym guide'em UX. Wynik korzysta z modelu scenario-first, a `VariantLineupComposer` jest wspólnym źródłem pełnej siódemki, pięciu miejsc ławki i blockerów dla UI oraz zapisu do VM. Nieoptymalizowany starter bazowy nie trafia już do puli kandydatów dla drugiego slotu tej samej pozycji, a composer pozostaje zabezpieczeniem przed nielegalnym duplikatem w starym lub zewnętrznym planie. UI odróżnia reguły VM od zdarzeń przypisanych do poszczególnych setów, a modal przekazuje do VM tę samą skomponowaną ławkę, którą pokazuje użytkownikowi. W Dockerze przeszły testy wyniku, composera, kontraktu VM oraz błędnych danych wariantu.
+Plan został uzgodniony z docelowym guide'em UX. Wynik korzysta z modelu scenario-first, a `VariantLineupComposer` jest wspólnym źródłem pełnej siódemki, pięciu miejsc ławki i blockerów dla UI oraz zapisu do VM. Nieoptymalizowany starter bazowy nie trafia już do puli kandydatów dla drugiego slotu tej samej pozycji, a composer pozostaje zabezpieczeniem przed nielegalnym duplikatem w starym lub zewnętrznym planie. UI odróżnia reguły VM od zdarzeń przypisanych do poszczególnych setów, a modal przekazuje do VM tę samą skomponowaną ławkę, którą pokazuje użytkownikowi. W Dockerze przeszły testy wyniku, composera, kontraktu VM oraz błędnych danych wariantu. Korekta wejścia rozwija typy wieloslotowe do fizycznych slotów, deduplikuje powtórzenia i wylicza `candidate_limit` z jednego limitu rezerwowych dla typu.
 
 ## Context and Orientation
 
@@ -641,3 +646,5 @@ Przykład niesendowalnego Wariantu:
 Plan Change Note: 2026-09-09 — pierwotny plan został poddany review względem `OPTIMIZER_RESULT_UI_GUIDE.md`. Zmieniono architekturę z płaskiego `rankedPlans` na scenario-first, dodano `selectedScenarioKey`, `VariantLineupComposer`, jawne `send_blockers`, różnice #2/#3 względem #1, `player_results` aktywnego Wariantu, compact input summary, weryfikację `scenarioSafetyMode`, wspólny model lineup/bench dla UI i VM oraz pełny rollback przez revert. Cofnięto wcześniejszą decyzję o odfiltrowaniu Wariantów z `substitutions_count === 0`: taki Wariant pozostaje legalny i może zapisać samą pełną taktykę.
 
 Plan Change Note: 2026-09-09 — wdrożenie dodało composer pełnego Wariantu, jawny kontrakt starterów/ławki dla VM i scenario-first result UI. Walidacja w Dockerze przeszła dla composera, kontraktu VM i wyboru Wariantu: 13 testów, 118 asercji; przeszedł też regresyjny test wykluczenia z `OptimizerFlowTest.php`.
+
+Plan Change Note: 2026-09-14 — korekta normalizacji wejścia: Przyjmujący i Środkowy rozwijają się do dwóch fizycznych slotów, powtórzenia typu są deduplikowane, a pula rezerwowych pozostaje współdzielona per typ. Dodano regresje formularza dla pojedynczego Przyjmującego oraz kombinacji Przyjmujący + Środkowy.

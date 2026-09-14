@@ -49,6 +49,10 @@ _Avoid_: Scenariusz 3:0, wyłącznie 3:2
 - Wysyłka jest dostępna dla każdego poprawnego, zaprezentowanego Wariantu planu zmian i zapisuje jego pełną taktykę oraz reguły zmian
 - Ławka VM ma zawsze dokładnie pięć możliwych miejsc; suma limitów rezerwowych w konfiguracji wejściowej nie może przekroczyć pięciu, a warianty wymagające większej ławki nie są legalnym wynikiem optymalizacji
 - Pozycja z limitem rezerwowych `0` nadal ma startera w każdym pełnym wariancie, ale nie generuje dla tej pozycji zmian ani zawodników na ławce
+- Wybór typu pozycji rozwija się do wszystkich jego fizycznych slotów: **Przyjmujący** i **Środkowy** mają po dwa sloty, a pozostałe typy po jednym
+- Powtórzenie typu pozycji nie tworzy dodatkowych slotów; kanoniczny wybór deduplikuje typy w kolejności pierwszego wystąpienia, więc `Środkowy + Środkowy` analizuje dokładnie `middle_1` i `middle_2`
+- Jedna pula rezerwowych i jeden limit `candidate_limit = liczba fizycznych slotów + reserve_limit` obowiązują dla każdego distinct typu pozycji; duplikaty nie sumują ani nie dublują limitu
+- Dla konfiguracji obejmujących 4–5 fizycznych slotów optymalizator korzysta z ograniczonego planera zachłannego, aby uniknąć niebezpiecznej eksplozji pełnej enumeracji; konfiguracje 1–3 slotów zachowują dotychczasowy wybór planera
 
 ## Example dialogue
 

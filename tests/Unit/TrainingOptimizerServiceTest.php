@@ -186,6 +186,32 @@ test('training optimizer service maximizes total gained training across shared c
         ->and(collect($rankedPlans[0]['player_results'])->where('played_actions', '>', 0)->count())->toBeGreaterThan(2);
 });
 
+test('training optimizer service routes four physical slots through the greedy planner', function () {
+    $scenario = MatchScenario::fromInput('25:20, 25:18, 25:22', 'Standardowe 3:0');
+
+    $outsideA = Player::factory()->make(['id' => 54, 'name' => 'Outside A', 'position' => PlayerPosition::OutsideHitter, 'training_bar' => 0]);
+    $outsideB = Player::factory()->make(['id' => 55, 'name' => 'Outside B', 'position' => PlayerPosition::OutsideHitter, 'training_bar' => 5]);
+    $middleA = Player::factory()->make(['id' => 56, 'name' => 'Middle A', 'position' => PlayerPosition::MiddleBlocker, 'training_bar' => 0]);
+    $middleB = Player::factory()->make(['id' => 57, 'name' => 'Middle B', 'position' => PlayerPosition::MiddleBlocker, 'training_bar' => 5]);
+
+    $rankedPlans = (new TrainingOptimizerService(
+        new TrainingGainCalculator,
+        new SubstitutionPlanGenerator,
+    ))->optimize([
+        ['slot_number' => 1, 'position' => PlayerPosition::OutsideHitter, 'reserve_limit' => 0, 'players' => [$outsideA, $outsideB]],
+        ['slot_number' => 2, 'position' => PlayerPosition::OutsideHitter, 'reserve_limit' => 0, 'players' => [$outsideA, $outsideB]],
+        ['slot_number' => 3, 'position' => PlayerPosition::MiddleBlocker, 'reserve_limit' => 0, 'players' => [$middleA, $middleB]],
+        ['slot_number' => 4, 'position' => PlayerPosition::MiddleBlocker, 'reserve_limit' => 0, 'players' => [$middleA, $middleB]],
+    ], $scenario, 1);
+
+    $slots = $rankedPlans[0]['plan']['slots'];
+
+    expect($rankedPlans)->not->toBeEmpty()
+        ->and($slots)->toHaveCount(4)
+        ->and(collect($slots)->where('position', PlayerPosition::OutsideHitter->value)->count())->toBe(2)
+        ->and(collect($slots)->where('position', PlayerPosition::MiddleBlocker->value)->count())->toBe(2);
+});
+
 test('training optimizer service rotates reserves when shared pool is large', function () {
     $scenario = MatchScenario::fromInput('25:20, 25:18, 25:22', 'Standardowe 3:0');
 
