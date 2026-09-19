@@ -21,20 +21,19 @@ test('substitution plan generator creates legal variants for two different posit
     $pointThresholds = collect($plans)
         ->flatMap(fn (array $plan): array => $plan['slots'])
         ->flatMap(fn (array $slot): array => $slot['sets'])
-        ->pluck('point_threshold')
+        ->pluck('activation_point')
         ->filter()
         ->unique()
         ->values()
         ->all();
 
-    expect(count($plans))->toBeGreaterThan(256)
+    expect($plans)->toHaveCount(64)
         ->and($plans[0]['slots'])->toHaveCount(2)
         ->and($plans[0]['slots'][0]['position'])->toBe(PlayerPosition::Setter->value)
         ->and($plans[0]['slots'][1]['position'])->toBe(PlayerPosition::Opposite->value)
         ->and($plans[0]['slots'][0]['sets'])->toHaveCount(3)
         ->and($plans[0]['slots'][1]['sets'])->toHaveCount(3)
-        ->and($pointThresholds)->toContain(1, 5)
-        ->and(max($pointThresholds))->toBeLessThanOrEqual(5);
+        ->and($pointThresholds)->toBe([1]);
 });
 
 test('substitution plan generator supports two slots with the same position without duplicating active players', function () {
@@ -49,7 +48,7 @@ test('substitution plan generator supports two slots with the same position with
         ['slot_number' => 2, 'position' => PlayerPosition::MiddleBlocker, 'players' => [$middleA, $middleB, $middleC]],
     ], $scenario);
 
-    expect(count($plans))->toBeGreaterThan(162);
+    expect($plans)->toHaveCount(27);
 
     foreach ($plans as $plan) {
         for ($setIndex = 0; $setIndex < 3; $setIndex++) {
@@ -138,7 +137,7 @@ test('substitution plan generator rejects more than five analyzed slots', functi
         ->toThrow(InvalidArgumentException::class, 'Generator oczekuje od jednego do pięciu analizowanych slotów.');
 });
 
-test('greedy generator supports three analyzed slots and point thresholds up to five', function () {
+test('greedy generator supports three analyzed slots and substitutions after the first action', function () {
     $scenario = MatchScenario::fromInput('25:12, 25:14, 25:13', 'Łatwe 3:0');
     $middleA = Player::factory()->make(['id' => 40, 'position' => PlayerPosition::MiddleBlocker, 'training_bar' => 0]);
     $middleB = Player::factory()->make(['id' => 41, 'position' => PlayerPosition::MiddleBlocker, 'training_bar' => 5]);
@@ -155,13 +154,55 @@ test('greedy generator supports three analyzed slots and point thresholds up to 
     $thresholds = collect($plans)
         ->flatMap(fn (array $plan): array => $plan['slots'])
         ->flatMap(fn (array $slot): array => $slot['sets'])
-        ->pluck('point_threshold')
+        ->pluck('activation_point')
         ->filter();
 
     expect($plans)->not->toBeEmpty()
         ->and($plans[0]['slots'])->toHaveCount(3)
-        ->and($thresholds->every(fn (int $threshold): bool => $threshold >= 1 && $threshold <= 5))->toBeTrue();
+        ->and($thresholds)->not->toBeEmpty()
+        ->and($thresholds->every(fn (int $threshold): bool => $threshold === 1))->toBeTrue();
 });
+
+test('greedy generator allocates a shared reserve to the slot with the greatest training benefit', function (PlayerPosition $position) {
+    $scenario = MatchScenario::fromInput('25:12, 25:14, 25:13', 'Łatwe 3:0');
+    $players = collect([10, 13, 15])->map(fn (int $bar, int $index): Player => Player::factory()->make([
+        'id' => 70 + $index,
+        'name' => 'Player '.$index,
+        'position' => $position,
+        'training_bar' => $bar,
+    ]))->all();
+
+    $plans = (new SubstitutionPlanGenerator)->generateGreedy([
+        ['slot_number' => 1, 'position' => $position, 'players' => $players],
+        ['slot_number' => 2, 'position' => $position, 'players' => $players],
+    ], $scenario);
+
+    expect($plans)->not->toBeEmpty();
+
+    foreach ($plans as $plan) {
+        $actions = array_fill_keys([70, 71, 72], 0);
+
+        foreach ($scenario->sets as $setIndex => $scenarioSet) {
+            $activeIds = [];
+
+            foreach ($plan['slots'] as $slot) {
+                $set = $slot['sets'][$setIndex];
+                $activeIds[] = $set['active_player']['id'];
+
+                if ($set['substitution_player'] === null) {
+                    $actions[$slot['starter']['id']] += $scenarioSet['actions'];
+                } else {
+                    $actions[$slot['starter']['id']]++;
+                    $actions[$set['active_player']['id']] += $scenarioSet['actions'] - 1;
+                }
+            }
+
+            expect(array_unique($activeIds))->toHaveCount(2);
+        }
+
+        expect(min($actions))->toBeGreaterThanOrEqual(50);
+    }
+})->with([PlayerPosition::OutsideHitter, PlayerPosition::MiddleBlocker]);
 
 test('greedy generator supports five analyzed slots', function () {
     $scenario = MatchScenario::fromInput('1:0, 1:0, 1:0', 'Krótki 3:0');

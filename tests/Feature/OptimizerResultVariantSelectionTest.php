@@ -50,3 +50,54 @@ test('selecting a variant keeps its lineup and bench visible', function () {
         ->assertSee('Reguły VM: '.$component->get('activeVariant')['substitution_rules_count'])
         ->assertSee('Zdarzenia w setach: '.$component->get('activeVariant')['substitutions_count']);
 });
+
+test('training losses and cap timing follow the selected scenario', function () {
+    Player::factory()->forPosition(PlayerPosition::Setter)->create(['name' => 'Training Setter', 'training_bar' => 10]);
+
+    session()->put('optimizer.input', [
+        'positions' => [['value' => PlayerPosition::Setter->value, 'label' => 'Rozgrywający', 'active_players' => 1]],
+        'fairness_threshold' => 20,
+        'reserve_pools' => [['position' => PlayerPosition::Setter->value, 'position_label' => 'Rozgrywający', 'reserve_limit' => 0]],
+        'scenarios' => [
+            MatchScenario::fromInput('25:12, 25:14, 25:13', 'First')->toArray(),
+            MatchScenario::fromInput('26:24, 25:0, 25:0', 'Second')->toArray(),
+        ],
+    ]);
+
+    $component = Livewire::test('pages::optimizer.result')
+        ->assertSee('Straty')
+        ->assertSee('Straty w secie: 26')
+        ->assertSee('Training Setter: 38 strat')
+        ->assertSee('Limit +50 osiągnięty w secie 2')
+        ->assertSee('Teoretyczne minimum strat: 64')
+        ->assertSee('Straty ponad minimum: 0');
+
+    $second = $component->get('scenarioVariants')[1];
+    $component->call('selectScenario', $second['scenario_key'])
+        ->assertSee('Limit +50 osiągnięty w secie 1')
+        ->assertDontSee('Limit +50 osiągnięty w secie 2')
+        ->assertSee('Teoretyczne minimum strat: 50')
+        ->assertDontSee('Training Setter: 38 strat');
+});
+
+test('an automatically improved variant explains its gain and remains sendable', function () {
+    foreach ([PlayerPosition::Setter, PlayerPosition::Setter, PlayerPosition::Opposite, PlayerPosition::MiddleBlocker, PlayerPosition::MiddleBlocker, PlayerPosition::OutsideHitter, PlayerPosition::OutsideHitter, PlayerPosition::Libero] as $index => $position) {
+        Player::factory()->forPosition($position)->withVmPlayerId(500 + $index)->create(['name' => 'Player '.$index, 'training_bar' => 0]);
+    }
+
+    session()->put('optimizer.input', [
+        'positions' => collect([PlayerPosition::Setter, PlayerPosition::Opposite, PlayerPosition::MiddleBlocker, PlayerPosition::MiddleBlocker])->map(fn (PlayerPosition $position): array => ['value' => $position->value, 'label' => $position->label()])->all(),
+        'fairness_threshold' => 20,
+        'reserve_pools' => collect([PlayerPosition::Setter, PlayerPosition::Opposite, PlayerPosition::MiddleBlocker])->map(fn (PlayerPosition $position): array => ['position' => $position->value, 'position_label' => $position->label(), 'reserve_limit' => $position === PlayerPosition::Setter ? 1 : 0])->all(),
+        'scenarios' => [MatchScenario::fromInput('25:12, 25:14, 25:13', '3:0')->toArray()],
+    ]);
+
+    $component = Livewire::test('pages::optimizer.result')
+        ->assertSee('Automatyczna korekta planu: +2 treningu i 2 mniej straconych akcji.');
+    $variant = $component->get('activeVariant');
+
+    expect($variant['total_gained_training'])->toBe(241)
+        ->and($variant['is_sendable'])->toBeTrue()
+        ->and($variant['send_blockers'])->toBe([])
+        ->and(app(VmSubstitutionService::class)->buildPayloads($variant['plan']))->not->toBeEmpty();
+});

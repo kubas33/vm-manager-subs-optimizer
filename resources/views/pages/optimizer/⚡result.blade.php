@@ -48,12 +48,14 @@ new #[Title('Wynik optymalizacji')] class extends Component
         }
         $this->selectedScenarioKey = $key;
         $this->selectedVariantKey = $scenario['variants'][0]['variant_key'] ?? '';
+        unset($this->activeScenario, $this->activeVariant);
     }
 
     public function selectVariant(string $key): void
     {
         if (collect($this->activeScenario['variants'] ?? [])->contains('variant_key', $key)) {
             $this->selectedVariantKey = $key;
+            unset($this->activeVariant);
         }
     }
 
@@ -324,8 +326,81 @@ new #[Title('Wynik optymalizacji')] class extends Component
                 <section class="rounded-3xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-700 dark:bg-zinc-900"><div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between"><div><flux:heading size="lg">Wariant #{{ $variant['rank'] }}</flux:heading><flux:text class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">Pełny skład, ławka i plan wybranego wariantu.</flux:text></div><flux:button variant="primary" wire:click="requestApplyVariant" :disabled="! $variant['is_sendable']">Wyślij ten wariant do VM Managera</flux:button></div>
                     <div class="mt-6 grid gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]"><div><flux:heading size="sm">Pełny skład</flux:heading><div class="mt-4 grid grid-cols-3 gap-3">@foreach ($variant['lineup'] as $slot)<div wire:key="lineup-{{ $variant['variant_key'] }}-{{ $slot['key'] }}" @class(['rounded-xl border p-3 text-center', 'border-zinc-200 bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-800' => $slot['player'], 'border-dashed border-amber-300 p-3 text-center' => ! $slot['player']]) style="grid-row: {{ $slot['grid_row'] ?? 'auto' }}; grid-column: {{ $slot['grid_column'] ?? 'auto' }};"><flux:text class="text-xs uppercase text-zinc-500">{{ $slot['abbreviation'] ?? $slot['key'] }}</flux:text><flux:text class="mt-1 text-sm font-medium">{{ $slot['player']?->name ?? 'Brak' }}</flux:text>@if ($slot['player'])<flux:text class="mt-1 text-xs text-zinc-600 dark:text-zinc-300">{{ $slot['player']->position->label() }} · {{ $slot['player']->training_bar }}%</flux:text><flux:badge class="mt-2" :color="$slot['source'] === 'optimized' ? 'sky' : 'zinc'">{{ $slot['source'] === 'optimized' ? 'optymalizowany' : 'bazowy' }}</flux:badge>@endif</div>@endforeach</div></div><div class="rounded-2xl border border-zinc-200 p-4 dark:border-zinc-700"><flux:heading size="sm">Ławka wariantu</flux:heading><flux:text class="mt-1 text-xs text-zinc-600 dark:text-zinc-300">Wymagana przez ten konkretny wariant.</flux:text><ul class="mt-4 space-y-2">@forelse (collect($variant['bench'])->filter() as $player)<li wire:key="bench-{{ $variant['variant_key'] }}-{{ $player->id }}" class="rounded-xl bg-zinc-50 p-3 dark:bg-zinc-800">{{ $player->name }} · {{ $player->position->label() }} · {{ $player->training_bar }}%</li>@empty<li class="text-sm text-zinc-600 dark:text-zinc-300">Ten wariant nie wymaga dodatkowych zawodników na ławce.</li>@endforelse</ul><flux:text class="mt-4 text-sm">{{ count(collect($variant['bench'])->filter()) }} zajęte · {{ count(collect($variant['bench'])->filter(fn ($player) => $player === null)) }} wolne miejsca</flux:text></div></div>
                     @if ($variant['send_blockers'] !== [])<flux:callout class="mt-6" icon="exclamation-triangle" color="red"><flux:callout.heading>Wariant nie może zostać wysłany</flux:callout.heading><flux:callout.text><ul class="mt-2 list-disc pl-5">@foreach ($variant['send_blockers'] as $blocker)<li wire:key="blocker-{{ $variant['variant_key'] }}-{{ $loop->index }}">{{ $blocker['message'] }}</li>@endforeach</ul></flux:callout.text></flux:callout>@endif
-                    <div class="mt-6"><flux:heading size="sm">Plan zmian</flux:heading>@php($sets = collect($variant['plan']['slots'])->flatMap(fn ($slot) => $slot['sets'])->groupBy('set_number')->sortKeys())<div class="mt-3 grid gap-3 md:grid-cols-2">@forelse ($sets as $number => $rules)<div class="rounded-2xl border border-zinc-200 p-4 dark:border-zinc-700"><flux:text class="font-medium">Set {{ $number }}</flux:text><ul class="mt-2 space-y-1 text-sm text-zinc-600 dark:text-zinc-300">@foreach ($rules as $rule)<li>{{ $rule['description'] }}</li>@endforeach</ul></div>@empty<flux:text class="text-sm text-zinc-600 dark:text-zinc-300">Plan nie wymaga zmian w trakcie meczu.</flux:text>@endforelse</div></div>
-                    <div class="mt-6 overflow-x-auto"><flux:heading size="sm">Efekt treningowy</flux:heading><table class="mt-3 min-w-full text-left text-sm"><thead><tr class="border-b border-zinc-200 text-zinc-500 dark:border-zinc-700"><th class="p-2">Zawodnik</th><th class="p-2">Pozycja</th><th class="p-2">Start</th><th class="p-2">Akcje</th><th class="p-2">Zysk</th><th class="p-2">Koniec</th></tr></thead><tbody>@foreach ($variant['player_results'] as $result)<tr wire:key="result-{{ $variant['variant_key'] }}-{{ $result['id'] }}" class="border-b border-zinc-100 dark:border-zinc-800"><td class="p-2">{{ $result['name'] }}</td><td class="p-2">{{ $result['position_label'] }}</td><td class="p-2">{{ $result['starting_training_bar'] }}%</td><td class="p-2">{{ $result['played_actions'] }}</td><td class="p-2">+{{ $result['gained_training'] }}%</td><td class="p-2">{{ $result['final_training_bar'] }}%</td></tr>@endforeach</tbody></table></div>
+                    @php($diagnostics = $variant['training_diagnostics'])
+                    <div class="mt-6 rounded-2xl bg-zinc-50 p-4 dark:bg-zinc-800">
+                        <flux:heading size="sm">Wykorzystanie treningu</flux:heading>
+                        @if (($variant['refinement_gained_training'] ?? 0) > 0)
+                            <p class="mt-2 text-sm text-emerald-700 dark:text-emerald-300">Automatyczna korekta planu: +{{ $variant['refinement_gained_training'] }} treningu i {{ $variant['refinement_gained_training'] }} mniej straconych akcji.</p>
+                        @endif
+                        <div class="mt-2 flex flex-wrap gap-x-6 gap-y-2 text-sm">
+                            <span>Straty łącznie: {{ $variant['wasted_actions'] }}</span>
+                            <span>Teoretyczne minimum strat: {{ $diagnostics['minimum_wasted_actions'] }}</span>
+                            <span>Straty ponad minimum: {{ $diagnostics['excess_wasted_actions'] }}</span>
+                        </div>
+                        <flux:text class="mt-2 text-xs">Dane dotyczą analizowanych pozycji. Minimum wynika z liczby akcji i limitów treningu zawodników. Dozwolone zmiany mogą uniemożliwić jego osiągnięcie.</flux:text>
+                    </div>
+                    <div class="mt-6">
+                        <flux:heading size="sm">Plan zmian</flux:heading>
+                        @php($sets = collect($variant['plan']['slots'])->flatMap(fn ($slot) => $slot['sets'])->groupBy('set_number')->sortKeys())
+                        <div class="mt-3 grid gap-3 md:grid-cols-2">
+                            @forelse ($sets as $number => $rules)
+                                @php($setResult = $diagnostics['sets'][$number])
+                                <div wire:key="set-{{ $variant['variant_key'] }}-{{ $number }}" class="rounded-2xl border border-zinc-200 p-4 dark:border-zinc-700">
+                                    <div class="flex flex-wrap items-center justify-between gap-2">
+                                        <flux:text class="font-medium">Set {{ $number }}</flux:text>
+                                        <span @class(['text-xs', 'text-amber-700 dark:text-amber-300' => $setResult['wasted_actions'] > 0, 'text-zinc-500 dark:text-zinc-400' => $setResult['wasted_actions'] === 0])>Straty w secie: {{ $setResult['wasted_actions'] }}</span>
+                                    </div>
+                                    <ul class="mt-2 space-y-1 text-sm text-zinc-600 dark:text-zinc-300">
+                                        @foreach ($rules as $rule)
+                                            <li wire:key="rule-{{ $variant['variant_key'] }}-{{ $number }}-{{ $loop->index }}">{{ $rule['description'] }}</li>
+                                        @endforeach
+                                    </ul>
+                                    @if ($setResult['wasted_actions'] > 0)
+                                        <ul class="mt-3 space-y-1 border-t border-zinc-100 pt-3 text-xs text-amber-700 dark:border-zinc-700 dark:text-amber-300">
+                                            @foreach ($setResult['players'] as $playerResult)
+                                                @if ($playerResult['wasted_actions'] > 0)
+                                                    <li wire:key="loss-{{ $variant['variant_key'] }}-{{ $number }}-{{ $playerResult['id'] }}">{{ $playerResult['name'] }}: {{ $playerResult['wasted_actions'] }} strat</li>
+                                                @endif
+                                            @endforeach
+                                        </ul>
+                                    @endif
+                                </div>
+                            @empty
+                                <flux:text class="text-sm text-zinc-600 dark:text-zinc-300">Plan nie wymaga zmian w trakcie meczu.</flux:text>
+                            @endforelse
+                        </div>
+                    </div>
+                    <div class="mt-6 overflow-x-auto">
+                        <flux:heading size="sm">Efekt treningowy</flux:heading>
+                        <table class="mt-3 min-w-full text-left text-sm">
+                            <thead>
+                                <tr class="border-b border-zinc-200 text-zinc-500 dark:border-zinc-700">
+                                    <th class="p-2">Zawodnik</th><th class="p-2">Pozycja</th><th class="p-2">Start</th><th class="p-2">Akcje</th><th class="p-2">Zysk</th><th class="p-2">Straty</th><th class="p-2">Koniec</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach ($variant['player_results'] as $result)
+                                    @php($playerDiagnostics = $diagnostics['players'][$result['id']])
+                                    <tr wire:key="result-{{ $variant['variant_key'] }}-{{ $result['id'] }}" class="border-b border-zinc-100 dark:border-zinc-800">
+                                        <td class="p-2">
+                                            {{ $result['name'] }}
+                                            @if ($playerDiagnostics['limit_reached_set'] === 0)
+                                                <div class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">Pełny pasek przed meczem</div>
+                                            @elseif ($playerDiagnostics['limit_reached_set'] !== null)
+                                                <div class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">Limit +{{ $playerDiagnostics['capacity'] }} osiągnięty w secie {{ $playerDiagnostics['limit_reached_set'] }}</div>
+                                            @endif
+                                        </td>
+                                        <td class="p-2">{{ $result['position_label'] }}</td>
+                                        <td class="p-2">{{ $result['starting_training_bar'] }}%</td>
+                                        <td class="p-2">{{ $result['played_actions'] }}</td>
+                                        <td class="p-2">+{{ $result['gained_training'] }}%</td>
+                                        <td @class(['p-2', 'font-medium text-amber-700 dark:text-amber-300' => $result['wasted_actions'] > 0])>{{ $result['wasted_actions'] }}</td>
+                                        <td class="p-2">{{ $result['final_training_bar'] }}%</td>
+                                    </tr>
+                                @endforeach
+                            </tbody>
+                        </table>
+                    </div>
                 </section>
             @endif
         @endif

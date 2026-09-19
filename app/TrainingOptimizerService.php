@@ -167,16 +167,32 @@ final class TrainingOptimizerService
             'count' => count($plans),
         ]);
 
-        $rankedPlans = array_map(
-            fn (array $plan): array => $this->evaluatePlanAcrossScenarios(
-                $plan,
-                $scenarios,
-                $selectedCandidates,
-                $fairnessThreshold,
-                $safeMode,
-            ),
-            $plans,
-        );
+        $rankedPlans = [];
+        $refiner = new TrainingPlanRefiner($this->substitutionPlanGenerator);
+        $seenPlans = [];
+
+        foreach ($plans as $plan) {
+            $refined = $useGreedyPlanner ? $refiner->refine($plan, $selectedCandidates, $scenarios, $safeMode) : null;
+            $alternatives = [['plan' => $plan, 'gain' => 0]];
+
+            if ($refined !== null && $refined['gained_training_after'] > $refined['gained_training_before']) {
+                array_unshift($alternatives, ['plan' => $refined['plan'], 'gain' => $refined['gained_training_after'] - $refined['gained_training_before']]);
+            }
+
+            foreach ($alternatives as $alternative) {
+                $signature = json_encode($alternative['plan'], JSON_THROW_ON_ERROR);
+
+                if (isset($seenPlans[$signature])) {
+                    continue;
+                }
+
+                $seenPlans[$signature] = true;
+                $rankedPlans[] = [
+                    ...$this->evaluatePlanAcrossScenarios($alternative['plan'], $scenarios, $selectedCandidates, $fairnessThreshold, $safeMode),
+                    'refinement_gained_training' => $alternative['gain'],
+                ];
+            }
+        }
 
         usort($rankedPlans, fn (array $left, array $right): int => $this->compareRankedPlans($left, $right));
 
@@ -222,7 +238,19 @@ final class TrainingOptimizerService
             ]);
         }
 
-        return array_slice($rankedPlans, 0, max(1, $limit));
+        $diagnostics = new TrainingPlanDiagnostics;
+
+        return array_map(function (array $result) use ($diagnostics, $selectedCandidates, $scenarios, $safeMode): array {
+            foreach ($result['scenario_results'] as $index => &$scenarioResult) {
+                $scenarioResult['training_diagnostics'] = $diagnostics->analyze($result['plan'], $selectedCandidates, $scenarios[$index]);
+
+                if (count($scenarios) === 1 || ($safeMode && $scenarioResult['is_worst_case'])) {
+                    $result['training_diagnostics'] = $scenarioResult['training_diagnostics'];
+                }
+            }
+
+            return $result;
+        }, array_slice($rankedPlans, 0, max(1, $limit)));
     }
 
     /**
