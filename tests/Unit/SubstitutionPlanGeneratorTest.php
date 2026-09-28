@@ -5,6 +5,28 @@ use App\MatchScenario;
 use App\Models\Player;
 use App\SubstitutionPlanGenerator;
 
+test('generator applies starter, set, exclusion and reserve constraints before ranking', function () {
+    $scenario = MatchScenario::fromInput('25:20, 25:18, 25:22', 'Mecz');
+    $players = collect(range(1, 4))->map(fn (int $id): Player => Player::factory()->make(['id' => $id, 'name' => 'Setter '.$id, 'position' => PlayerPosition::Setter, 'training_bar' => $id * 10]))->all();
+    $constraints = [
+        ['kind' => 'starter', 'player_id' => 2, 'position' => PlayerPosition::Setter->value, 'set_number' => 1],
+        ['kind' => 'set', 'player_id' => 3, 'position' => PlayerPosition::Setter->value, 'set_number' => 2],
+        ['kind' => 'exclude', 'player_id' => 4, 'position' => PlayerPosition::Setter->value, 'set_number' => 1],
+        ['kind' => 'reserve_only', 'player_id' => 3, 'position' => PlayerPosition::Setter->value, 'set_number' => 1],
+    ];
+    $slots = [['slot_number' => 1, 'position' => PlayerPosition::Setter, 'players' => $players]];
+
+    foreach (['generate', 'generateGreedy'] as $method) {
+        $plans = (new SubstitutionPlanGenerator)->{$method}($slots, $scenario, $constraints);
+        expect($plans)->not->toBeEmpty();
+        foreach ($plans as $plan) {
+            expect($plan['slots'][0]['starter']['id'])->toBe(2)
+                ->and($plan['slots'][0]['sets'][1]['active_player']['id'])->toBe(3)
+                ->and((new SubstitutionPlanGenerator)->satisfiesConstraints($plan, $constraints))->toBeTrue();
+        }
+    }
+});
+
 test('substitution plan generator creates legal variants for two different positions', function () {
     $scenario = MatchScenario::fromInput('25:20, 25:18, 25:22', 'Standardowe 3:0');
 

@@ -26,6 +26,24 @@ new #[Title('Optymalizacja')] class extends Component
     public bool $scenarioSafetyMode = false;
     /** @var array<string, string> */
     public array $reserveLimitsByPosition = [];
+    public array $playerConstraints = [];
+
+    #[Computed]
+    public function constraintPlayers(): array
+    {
+        return Player::query()->available()->whereIn('position', $this->distinctSelectedPositions())->orderBy('position')->orderBy('name')->get()->map(fn (Player $player): array => ['id' => $player->id, 'name' => $player->name, 'position' => $player->position->value])->all();
+    }
+
+    public function addPlayerConstraint(): void
+    {
+        $this->playerConstraints[] = ['kind' => 'starter', 'player_id' => '', 'position' => '', 'set_number' => '1'];
+    }
+
+    public function removePlayerConstraint(int $index): void
+    {
+        unset($this->playerConstraints[$index]);
+        $this->playerConstraints = array_values($this->playerConstraints);
+    }
 
     public function mount(): void
     {
@@ -296,6 +314,7 @@ new #[Title('Optymalizacja')] class extends Component
             $draft['reserveLimitsByPosition'] ?? null,
             $this->reserveLimitsByPosition,
         );
+        $this->playerConstraints = is_array($draft['playerConstraints'] ?? null) ? array_values($draft['playerConstraints']) : [];
 
         $this->syncReserveLimitState();
         $this->resetValidation();
@@ -427,6 +446,11 @@ new #[Title('Optymalizacja')] class extends Component
             'multipleScenarios' => [Rule::requiredIf($this->scenarioMode === 'multiple'), 'string'],
             'fairnessThreshold' => ['required', 'integer', 'min:0', 'max:100'],
             'scenarioSafetyMode' => ['boolean'],
+            'playerConstraints' => ['array', 'max:12'],
+            'playerConstraints.*.kind' => ['required', Rule::in(['starter', 'set', 'exclude', 'reserve_only'])],
+            'playerConstraints.*.player_id' => ['required', 'integer', 'exists:players,id'],
+            'playerConstraints.*.position' => ['nullable', Rule::enum(PlayerPosition::class)],
+            'playerConstraints.*.set_number' => ['nullable', 'integer', 'min:1', 'max:5'],
         ];
 
         if ($this->usesSharedReservePool()) {
@@ -482,6 +506,29 @@ new #[Title('Optymalizacja')] class extends Component
     {
         $validator = Validator::make($this->validationData(), $this->rules(), $this->messages());
 
+        $validator->after(function ($validator): void {
+            $players = collect($this->constraintPlayers())->keyBy('id');
+            $positions = $this->distinctSelectedPositions();
+            $maxSets = collect($this->scenarioPreview)->max('sets_count') ?? 0;
+            foreach ($this->playerConstraints as $index => $constraint) {
+                $player = $players->get((int) ($constraint['player_id'] ?? 0));
+                $kind = $constraint['kind'] ?? '';
+                if (! $player) {
+                    $validator->errors()->add("playerConstraints.$index.player_id", 'Wybierz dostępnego zawodnika z analizowanej pozycji.');
+                    continue;
+                }
+                if (in_array($kind, ['starter', 'set'], true) && (! in_array($constraint['position'] ?? '', $positions, true) || $constraint['position'] !== $player['position'])) {
+                    $validator->errors()->add("playerConstraints.$index.position", 'Pozycja musi odpowiadać zawodnikowi i analizowanym slotom.');
+                }
+                if ($kind === 'set' && (int) ($constraint['set_number'] ?? 0) > $maxSets) {
+                    $validator->errors()->add("playerConstraints.$index.set_number", 'Ten set nie występuje w wybranym scenariuszu.');
+                }
+                if (in_array($kind, ['starter', 'set'], true) && collect($this->playerConstraints)->contains(fn (array $other): bool => (int) ($other['player_id'] ?? 0) === $player['id'] && in_array($other['kind'] ?? '', ['exclude', 'reserve_only'], true) && ($kind === 'starter' || $other['kind'] === 'exclude'))) {
+                    $validator->errors()->add("playerConstraints.$index.kind", 'Sprzeczne zasady dla zawodnika.');
+                }
+            }
+        });
+
         if (! $this->usesSharedReservePool()) {
             $validator->after(function ($validator): void {
                 $sum = collect($this->distinctSelectedPositions())
@@ -534,6 +581,7 @@ new #[Title('Optymalizacja')] class extends Component
                 ? 'Bezpieczny'
                 : 'Standardowy',
             'reserve_pools' => $this->normalizeReservePools($validated),
+            'player_constraints' => collect($validated['playerConstraints'] ?? [])->map(fn (array $constraint): array => ['kind' => $constraint['kind'], 'player_id' => (int) $constraint['player_id'], 'position' => $constraint['position'] ?: (Player::query()->find($constraint['player_id'])?->position->value ?? ''), 'set_number' => (int) ($constraint['set_number'] ?? 1)])->all(),
             'scenarios' => $this->buildScenarioSet($validated)->toArray(),
         ];
     }
@@ -702,6 +750,7 @@ new #[Title('Optymalizacja')] class extends Component
             'scenarioSafetyMode' => $this->scenarioSafetyMode,
             'sharedReserveLimit' => $this->sharedReserveLimit,
             'reserveLimitsByPosition' => $this->reserveLimitsByPosition,
+            'playerConstraints' => $this->playerConstraints,
         ];
     }
 
@@ -1001,6 +1050,26 @@ new #[Title('Optymalizacja')] class extends Component
                             @enderror
                         @endforeach
                     @endif
+                </div>
+
+                <div class="space-y-4">
+                    <div class="flex items-center justify-between gap-3">
+                        <div><flux:heading size="base">Ograniczenia zawodników</flux:heading><flux:text class="text-sm">Zasady obowiązują każdy wygenerowany wariant.</flux:text></div>
+                        <flux:button type="button" size="sm" wire:click="addPlayerConstraint">Dodaj zasadę</flux:button>
+                    </div>
+                    @foreach ($playerConstraints as $index => $constraint)
+                        <div wire:key="constraint-{{ $index }}" class="grid gap-3 rounded-xl border border-zinc-200 p-3 dark:border-zinc-700 md:grid-cols-4">
+                            <flux:select wire:model.live="playerConstraints.{{ $index }}.kind" label="Zasada"><option value="starter">Starter na pozycji</option><option value="set">Gra w secie</option><option value="exclude">Wyklucz</option><option value="reserve_only">Tylko rezerwowy</option></flux:select>
+                            <flux:select wire:model.live="playerConstraints.{{ $index }}.player_id" label="Zawodnik"><option value="">Wybierz</option>@foreach ($this->constraintPlayers as $player)<option value="{{ $player['id'] }}">{{ $player['name'] }}</option>@endforeach</flux:select>
+                            @if (in_array($constraint['kind'], ['starter', 'set'], true))
+                                <flux:select wire:model.live="playerConstraints.{{ $index }}.position" label="Pozycja"><option value="">Wybierz</option>@foreach ($this->distinctSelectedPositions() as $position)<option value="{{ $position }}">{{ PlayerPosition::from($position)->label() }}</option>@endforeach</flux:select>
+                            @endif
+                            @if ($constraint['kind'] === 'set')<flux:input type="number" min="1" max="5" wire:model="playerConstraints.{{ $index }}.set_number" label="Set" />@endif
+                            <flux:button type="button" variant="ghost" wire:click="removePlayerConstraint({{ $index }})">Usuń</flux:button>
+                            @foreach (['kind', 'player_id', 'position', 'set_number'] as $field)@error("playerConstraints.$index.$field")<flux:text class="text-sm text-rose-600">{{ $message }}</flux:text>@enderror@endforeach
+                        </div>
+                    @endforeach
+                    @error('playerConstraints')<flux:text class="text-sm text-rose-600">{{ $message }}</flux:text>@enderror
                 </div>
 
                 <div class="space-y-4">

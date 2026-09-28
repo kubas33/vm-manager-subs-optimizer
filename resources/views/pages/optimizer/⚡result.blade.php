@@ -28,10 +28,126 @@ new #[Title('Wynik optymalizacji')] class extends Component
     public ?string $pendingVariantKey = null;
     public string $tacticsStatus = '';
     public string $changesDeletionStatus = '';
+    public bool $editingVariant = false;
+    public array $manualAssignments = [];
+    public array $savedManualVariants = [];
+    public string $compareVariantKey = '';
+
+    public function startManualEdit(): void
+    {
+        $this->manualAssignments = $this->savedManualVariants[$this->selectedScenarioKey.'|'.$this->selectedVariantKey] ?? [];
+        $this->editingVariant = true;
+    }
+
+    public function cancelManualEdit(): void
+    {
+        $this->editingVariant = false;
+        $this->manualAssignments = [];
+    }
+
+    public function saveManualVariant(): void
+    {
+        $preview = $this->manualPreview;
+        if (! is_array($preview) || ! $preview['is_sendable']) {
+            $this->addError('manual', 'Popraw skład i ławkę przed zapisaniem ręcznego planu.');
+
+            return;
+        }
+
+        $key = $this->selectedScenarioKey.'|'.$this->selectedVariantKey;
+        $this->savedManualVariants[$key] = $this->manualAssignments;
+        session()->put('optimizer.manual_variants', ['input_hash' => hash('sha256', json_encode($this->optimizerInput, JSON_THROW_ON_ERROR)), 'assignments' => $this->savedManualVariants]);
+        $this->editingVariant = false;
+        unset($this->activeVariant, $this->manualPreview);
+    }
+
+    #[Computed]
+    public function manualPreview(): ?array
+    {
+        $base = collect($this->activeScenario['variants'] ?? [])->firstWhere('variant_key', $this->selectedVariantKey);
+        return is_array($base) ? $this->evaluateManualVariant($base, $this->manualAssignments) : null;
+    }
+
+    private function evaluateManualVariant(array $base, array $assignments): ?array
+    {
+        $scenario = collect($this->scenarioModels)->first(fn (MatchScenario $item): bool => hash('sha256', preg_replace('/\s+/', '', $item->input)) === $this->selectedScenarioKey);
+        if (! $scenario) {
+            return null;
+        }
+
+        $plan = $base['plan'];
+        $blockers = [];
+        $players = collect($this->slotDefinitions)->flatMap(fn (array $slot): array => $slot['players'])->keyBy('id');
+        foreach ($plan['slots'] as $slotIndex => &$slot) {
+            foreach ($slot['sets'] as $setIndex => &$set) {
+                $key = $slot['slot_number'].'-'.$set['set_number'];
+                $playerId = (int) ($assignments[$key] ?? $set['active_player']['id']);
+                $player = $players->get($playerId);
+                if (! $player instanceof Player || $player->position->value !== $slot['position']) {
+                    $blockers[] = ['message' => 'Nieprawidłowy zawodnik w slocie '.$slot['slot_number'].'.'];
+                    continue;
+                }
+                $summary = ['id' => $player->id, 'name' => $player->name, 'position' => $player->position->value, 'training_bar' => $player->training_bar];
+                $set['active_player'] = $summary;
+                $set['substitution_player'] = $playerId === $slot['starter']['id'] ? null : $summary;
+                $set['activation_point'] = $set['substitution_player'] ? 1 : null;
+                $set['description'] = $set['substitution_player']
+                    ? 'Slot '.$slot['slot_number'].' ('.$slot['position_label'].'): '.$slot['starter']['name'].' start, Set '.$set['set_number'].' od 1 punktu -> '.$player->name
+                    : 'Slot '.$slot['slot_number'].' ('.$slot['position_label'].'): '.$player->name.' bez zmiany w secie '.$set['set_number'];
+            }
+            unset($set);
+        }
+        unset($slot);
+
+        foreach (range(1, $scenario->setsCount()) as $setNumber) {
+            $activeIds = collect($plan['slots'])->map(fn (array $slot): int => (int) $slot['sets'][$setNumber - 1]['active_player']['id'])->all();
+            if (count($activeIds) !== count(array_unique($activeIds))) {
+                $blockers[] = ['message' => 'Ten sam zawodnik zajmuje dwa sloty w secie '.$setNumber.'.'];
+            }
+        }
+
+        $starterIds = collect($plan['slots'])->pluck('starter.id')->all();
+        foreach ($plan['slots'] as $slot) {
+            foreach ($slot['sets'] as $set) {
+                if ($set['substitution_player'] && in_array($set['active_player']['id'], $starterIds, true)) {
+                    $blockers[] = ['message' => 'Starter innego slotu nie może być rezerwowym.'];
+                }
+            }
+        }
+
+        $benchIds = collect($plan['slots'])->flatMap(fn (array $slot): array => collect($slot['sets'])->pluck('substitution_player.id')->filter()->all())->unique();
+        if ($benchIds->count() > 5) {
+            $blockers[] = ['message' => 'Wspólna ławka przekracza limit pięciu zawodników.'];
+        }
+        foreach ($this->optimizerInput['reserve_pools'] ?? [] as $pool) {
+            if ($benchIds->filter(fn (int $id): bool => $players->get($id)?->position->value === $pool['position'])->count() > $pool['reserve_limit']) {
+                $blockers[] = ['message' => 'Przekroczono limit ławki dla pozycji '.$pool['position_label'].'.'];
+            }
+        }
+
+        if (! (new SubstitutionPlanGenerator)->satisfiesConstraints($plan, $this->optimizerInput['player_constraints'] ?? [])) {
+            $blockers[] = ['message' => 'Ręczny plan narusza ograniczenia zawodników.'];
+        }
+
+        $optimizer = new TrainingOptimizerService(new TrainingGainCalculator, new SubstitutionPlanGenerator);
+        $evaluated = $optimizer->evaluateCustomPlan($plan, $scenario, $this->slotDefinitions, $this->fairnessThreshold);
+        $composed = (new VariantLineupComposer)->compose($this->lineupRecommendations['recommendations'][0] ?? [], $plan);
+        $blockers = [...$blockers, ...$composed['send_blockers']];
+        $rulesCount = $this->substitutionRulesCount($plan);
+        if ($rulesCount === null) {
+            $blockers[] = ['message' => 'Reguły zmian VM są nieprawidłowe.'];
+        }
+
+        return [...$base, ...$evaluated, ...$composed, 'substitution_rules_count' => $rulesCount, 'send_blockers' => $blockers, 'is_sendable' => $blockers === [], 'manual' => true];
+    }
 
     public function mount(): void
     {
         $this->optimizerInput = session('optimizer.input', []);
+        $stored = session('optimizer.manual_variants', []);
+        if (($stored['input_hash'] ?? null) === hash('sha256', json_encode($this->optimizerInput, JSON_THROW_ON_ERROR))) {
+            $this->savedManualVariants = $stored['assignments'] ?? [];
+        }
         $this->synchronizeSelection();
     }
 
@@ -42,6 +158,8 @@ new #[Title('Wynik optymalizacji')] class extends Component
 
     public function selectScenario(string $key): void
     {
+        $this->cancelManualEdit();
+        $this->compareVariantKey = '';
         $scenario = collect($this->scenarioVariants)->firstWhere('scenario_key', $key);
         if (! is_array($scenario)) {
             return;
@@ -54,6 +172,7 @@ new #[Title('Wynik optymalizacji')] class extends Component
     public function selectVariant(string $key): void
     {
         if (collect($this->activeScenario['variants'] ?? [])->contains('variant_key', $key)) {
+            $this->cancelManualEdit();
             $this->selectedVariantKey = $key;
             unset($this->activeVariant);
         }
@@ -206,7 +325,7 @@ new #[Title('Wynik optymalizacji')] class extends Component
             return [];
         }
         $optimizer = new TrainingOptimizerService(new TrainingGainCalculator(), new SubstitutionPlanGenerator());
-        return collect($this->scenarioModels)->map(fn ($scenario) => ['label' => $scenario->label, 'input' => $scenario->input, 'sets_count' => $scenario->setsCount(), 'plans' => $optimizer->optimize($this->slotDefinitions, $scenario, 3, $this->fairnessThreshold)])->all();
+        return collect($this->scenarioModels)->map(fn ($scenario) => ['label' => $scenario->label, 'input' => $scenario->input, 'sets_count' => $scenario->setsCount(), 'plans' => $optimizer->optimize($this->slotDefinitions, $scenario, 3, $this->fairnessThreshold, constraints: $this->optimizerInput['player_constraints'] ?? [])])->all();
     }
 
     #[Computed] public function scenarioVariants(): array
@@ -221,7 +340,7 @@ new #[Title('Wynik optymalizacji')] class extends Component
                 return [...$plan, ...$composed, 'rank' => $index + 1, 'substitution_rules_count' => $substitutionRulesCount, 'variant_key' => hash('sha256', $scenarioKey.'|'.json_encode($this->canonicalPlan($plan), JSON_THROW_ON_ERROR).'|'.json_encode($plan, JSON_THROW_ON_ERROR))];
             })->all();
             $recommended = $variants[0] ?? null;
-            $variants = collect($variants)->map(fn ($variant) => [...$variant, 'differences_from_recommendation' => $recommended ? $this->differences($variant, $recommended) : ''])->all();
+            $variants = collect($variants)->map(fn ($variant) => [...$variant, 'differences_from_recommendation' => $recommended ? $this->differences($variant, $recommended) : '', 'gain_delta' => $recommended ? $variant['total_gained_training'] - $recommended['total_gained_training'] : 0, 'wasted_delta' => $recommended ? $variant['wasted_actions'] - $recommended['wasted_actions'] : 0, 'players_at_limit' => collect($variant['training_diagnostics']['players'] ?? [])->filter(fn (array $player): bool => $player['limit_reached_set'] !== null && $player['limit_reached_set'] > 0)->count()])->all();
             return ['scenario_key' => $scenarioKey, 'label' => $ranking['label'], 'input' => $ranking['input'], 'sets_count' => $ranking['sets_count'], 'variants' => $variants];
         })->all();
     }
@@ -236,7 +355,9 @@ new #[Title('Wynik optymalizacji')] class extends Component
             return null;
         }
 
-        return [...$variant, ...(new VariantLineupComposer)->compose($this->lineupRecommendations['recommendations'][0] ?? [], $variant['plan'])];
+        $saved = $this->savedManualVariants[$this->selectedScenarioKey.'|'.$this->selectedVariantKey] ?? null;
+
+        return is_array($saved) ? $this->evaluateManualVariant($variant, $saved) : [...$variant, ...(new VariantLineupComposer)->compose($this->lineupRecommendations['recommendations'][0] ?? [], $variant['plan'])];
     }
     #[Computed] public function pendingVariant(): ?array { return $this->variantForKeys($this->pendingScenarioKey, $this->pendingVariantKey); }
     #[Computed] public function rankedPlans(): array
@@ -285,7 +406,12 @@ new #[Title('Wynik optymalizacji')] class extends Component
     private function variantForKeys(?string $scenarioKey, ?string $variantKey): ?array
     {
         $scenario = collect($this->scenarioVariants)->firstWhere('scenario_key', $scenarioKey);
-        return is_array($scenario) ? collect($scenario['variants'])->firstWhere('variant_key', $variantKey) : null;
+        $variant = is_array($scenario) ? collect($scenario['variants'])->firstWhere('variant_key', $variantKey) : null;
+        $saved = $this->savedManualVariants[$scenarioKey.'|'.$variantKey] ?? null;
+
+        return is_array($saved) && is_array($variant) && $scenarioKey === $this->selectedScenarioKey
+            ? $this->evaluateManualVariant($variant, $saved)
+            : $variant;
     }
 
     private function canonicalPlan(array $plan): array
@@ -298,6 +424,35 @@ new #[Title('Wynik optymalizacji')] class extends Component
         $starters = collect(VmTacticsService::COURT_SLOT_KEYS)->filter(fn ($key) => ($variant['lineup'][$key]['player']?->id ?? null) !== ($recommended['lineup'][$key]['player']?->id ?? null))->count();
         $rules = array_diff(array_map('json_encode', $this->canonicalPlan($variant['plan'])), array_map('json_encode', $this->canonicalPlan($recommended['plan'])));
         return $starters.' innych starterów · '.count($rules).' innych reguł zmian';
+    }
+
+    #[Computed]
+    public function comparedSlots(): array
+    {
+        $left = $this->activeVariant;
+        $right = collect($this->activeScenario['variants'] ?? [])->firstWhere('variant_key', $this->compareVariantKey);
+        if (! $left || ! $right || $left['variant_key'] === $right['variant_key']) {
+            return [];
+        }
+
+        $rightSlots = collect($right['plan']['slots'])->keyBy('slot_number');
+        $differences = [];
+        foreach ($left['plan']['slots'] as $slot) {
+            $other = $rightSlots->get($slot['slot_number']);
+            if (! $other) {
+                continue;
+            }
+            if ($slot['starter']['id'] !== $other['starter']['id']) {
+                $differences[] = 'Slot '.$slot['slot_number'].' · starter: '.$slot['starter']['name'].' / '.$other['starter']['name'];
+            }
+            foreach ($slot['sets'] as $index => $set) {
+                if ($set['active_player']['id'] !== $other['sets'][$index]['active_player']['id']) {
+                    $differences[] = 'Slot '.$slot['slot_number'].' · set '.$set['set_number'].': '.$set['active_player']['name'].' / '.$other['sets'][$index]['active_player']['name'];
+                }
+            }
+        }
+
+        return $differences;
     }
 
     private function authorizeVmAction(): void { abort_unless(config('auth.disable_auth') || auth()->check(), 403); }
@@ -320,10 +475,21 @@ new #[Title('Wynik optymalizacji')] class extends Component
         @error('variant')<flux:callout icon="exclamation-triangle" color="red"><flux:callout.heading>Nie wysłano wariantu</flux:callout.heading><flux:callout.text>{{ $message }}</flux:callout.text></flux:callout>@enderror
         @if ($this->scenarioVariants === [])<flux:callout icon="users" color="amber"><flux:callout.heading>Brak legalnych wariantów</flux:callout.heading><flux:callout.text>Uzupełnij aktywnych zawodników i konfigurację.</flux:callout.text></flux:callout>@else
             <section class="rounded-3xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-700 dark:bg-zinc-900"><flux:text class="text-sm font-medium uppercase tracking-[0.18em] text-zinc-500">Scenariusze meczu</flux:text><div class="mt-4 flex flex-wrap gap-2">@foreach ($this->scenarioVariants as $scenario)<flux:button wire:key="scenario-{{ $scenario['scenario_key'] }}" size="sm" :variant="$scenario['scenario_key'] === $selectedScenarioKey ? 'primary' : 'ghost'" wire:click="selectScenario('{{ $scenario['scenario_key'] }}')">{{ $scenario['label'] }} · {{ count($scenario['variants']) }} warianty</flux:button>@endforeach</div></section>
-            @php($scenario = $this->activeScenario) @php($variant = $this->activeVariant)
+            @php($scenario = $this->activeScenario) @php($previousVariant = $this->activeVariant) @php($variant = $editingVariant ? $this->manualPreview : $previousVariant)
+            @if ($scenario && ! $variant)<flux:callout icon="exclamation-triangle" color="amber"><flux:callout.heading>Brak wariantów dla scenariusza</flux:callout.heading><flux:callout.text>Sprawdź dostępność zawodników, limity ławki i ograniczenia wejściowe.</flux:callout.text></flux:callout>@endif
             @if ($scenario && $variant)
-                <section class="rounded-3xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-700 dark:bg-zinc-900"><flux:heading size="lg">{{ $scenario['label'] }}</flux:heading><flux:text class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">{{ $scenario['input'] }} · {{ $scenario['sets_count'] }} sety</flux:text><div class="mt-5 grid gap-3 md:grid-cols-3">@foreach ($scenario['variants'] as $item)<button type="button" wire:key="variant-{{ $item['variant_key'] }}" wire:click="selectVariant('{{ $item['variant_key'] }}')" @class(['rounded-2xl border p-4 text-left', 'border-sky-500 bg-sky-50 dark:bg-sky-950/30' => $item['variant_key'] === $selectedVariantKey, 'border-zinc-200 bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-800' => $item['variant_key'] !== $selectedVariantKey])><div class="flex justify-between"><span class="font-semibold">#{{ $item['rank'] }}</span>@if ($item['rank'] === 1)<flux:badge color="emerald">Rekomendowany</flux:badge>@endif</div><div class="mt-3 text-xl font-semibold">+{{ $item['total_gained_training'] }} treningu</div><div class="mt-2 grid grid-cols-2 gap-1 text-xs text-zinc-600 dark:text-zinc-300"><span>min. {{ $item['lowest_final_training_bar'] }}%</span><span>{{ $item['players_below_fairness_threshold'] }} poniżej progu</span><span>{{ $item['wasted_actions'] }} zmarnowanych</span><span>{{ $item['substitution_rules_count'] ?? '—' }} reguł zmian</span></div>@if ($item['rank'] > 1)<p class="mt-3 text-xs text-zinc-600 dark:text-zinc-300">{{ $item['differences_from_recommendation'] }}</p>@endif</button>@endforeach</div></section>
-                <section class="rounded-3xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-700 dark:bg-zinc-900"><div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between"><div><flux:heading size="lg">Wariant #{{ $variant['rank'] }}</flux:heading><flux:text class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">Pełny skład, ławka i plan wybranego wariantu.</flux:text></div><flux:button variant="primary" wire:click="requestApplyVariant" :disabled="! $variant['is_sendable']">Wyślij ten wariant do VM Managera</flux:button></div>
+                <section class="rounded-3xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-700 dark:bg-zinc-900"><flux:heading size="lg">{{ $scenario['label'] }}</flux:heading><flux:text class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">{{ $scenario['input'] }} · {{ $scenario['sets_count'] }} sety</flux:text><div class="mt-5 grid gap-3 md:grid-cols-3">@foreach ($scenario['variants'] as $item)<button type="button" wire:key="variant-{{ $item['variant_key'] }}" wire:click="selectVariant('{{ $item['variant_key'] }}')" @class(['rounded-2xl border p-4 text-left', 'border-sky-500 bg-sky-50 dark:bg-sky-950/30' => $item['variant_key'] === $selectedVariantKey, 'border-zinc-200 bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-800' => $item['variant_key'] !== $selectedVariantKey])><div class="flex justify-between"><span class="font-semibold">#{{ $item['rank'] }}</span>@if ($item['rank'] === 1)<flux:badge color="emerald">Rekomendowany</flux:badge>@endif</div><div class="mt-3 text-xl font-semibold">+{{ $item['total_gained_training'] }} treningu</div><div class="mt-2 grid grid-cols-2 gap-1 text-xs text-zinc-600 dark:text-zinc-300"><span>min. {{ $item['lowest_final_training_bar'] }}%</span><span>{{ $item['players_below_fairness_threshold'] }} poniżej progu</span><span>{{ $item['wasted_actions'] }} stratnych akcji ({{ sprintf('%+d', $item['wasted_delta']) }})</span><span>{{ $item['substitutions_count'] }} zmian · {{ $item['substitution_rules_count'] ?? '—' }} reguł VM</span><span>{{ $item['players_at_limit'] }} osiąga limit</span><span>{{ sprintf('%+d', $item['gain_delta']) }} treningu do rekomendacji</span></div>@if ($item['rank'] > 1 && $item['gain_delta'] === 0 && $item['substitutions_count'] !== $scenario['variants'][0]['substitutions_count'])<p class="mt-2 text-xs text-emerald-700">Ten sam zysk; {{ $item['substitutions_count'] < $scenario['variants'][0]['substitutions_count'] ? 'ten wariant' : 'rekomendacja' }} wymaga mniej zmian.</p>@endif @if ($item['rank'] > 1)<p class="mt-3 text-xs text-zinc-600 dark:text-zinc-300">{{ $item['differences_from_recommendation'] }}</p>@endif</button>@endforeach</div>
+                    <div class="mt-5"><flux:select wire:model.live="compareVariantKey" label="Porównaj z wariantem" class="max-w-xs"><option value="">Wybierz wariant</option>@foreach ($scenario['variants'] as $item)<option value="{{ $item['variant_key'] }}">Wariant #{{ $item['rank'] }}</option>@endforeach</flux:select>@if ($compareVariantKey !== '')<ul class="mt-3 space-y-1 text-sm">@forelse ($this->comparedSlots as $difference)<li>{{ $difference }}</li>@empty<li>Brak różnic w slotach i setach.</li>@endforelse</ul>@endif</div>
+                </section>
+                <section class="rounded-3xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-700 dark:bg-zinc-900"><div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between"><div><flux:heading size="lg">Wariant #{{ $variant['rank'] }}{{ $editingVariant || ($variant['manual'] ?? false) ? ' · ręczny' : '' }}</flux:heading><flux:text class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">Pełny skład, ławka i plan wybranego wariantu.</flux:text></div><div class="flex flex-wrap gap-2">@if ($editingVariant)<flux:button wire:click="cancelManualEdit">Anuluj edycję</flux:button><flux:button variant="primary" wire:click="saveManualVariant" :disabled="! $variant['is_sendable']">Zapisz ręczny plan</flux:button>@else<flux:button wire:click="startManualEdit">Edytuj wariant</flux:button><flux:button variant="primary" wire:click="requestApplyVariant" :disabled="! $variant['is_sendable']">Wyślij ten wariant do VM Managera</flux:button>@endif</div></div>
+                    @if ($editingVariant)
+                        <div class="mt-4 rounded-2xl border border-sky-200 bg-sky-50 p-4 dark:border-sky-800 dark:bg-sky-950/30">
+                            <flux:heading size="sm">Ręczna korekta setów</flux:heading>
+                            <p class="mt-2 text-sm">{{ sprintf('%+d', $variant['total_gained_training'] - $previousVariant['total_gained_training']) }} treningu · {{ sprintf('%+d', $variant['wasted_actions'] - $previousVariant['wasted_actions']) }} stratnych akcji</p>
+                            <div class="mt-3 grid gap-3 md:grid-cols-2 lg:grid-cols-3">@foreach ($previousVariant['plan']['slots'] as $slot)@foreach ($slot['sets'] as $set)<div wire:key="edit-{{ $slot['slot_number'] }}-{{ $set['set_number'] }}"><flux:select wire:model.live="manualAssignments.{{ $slot['slot_number'] }}-{{ $set['set_number'] }}" label="Slot {{ $slot['slot_number'] }} · set {{ $set['set_number'] }}"><option value="{{ $set['active_player']['id'] }}">{{ $set['active_player']['name'] }} (obecnie)</option>@foreach ($this->slotDefinitions as $definition)@if ($definition['slot_number'] === $slot['slot_number'])@foreach ($definition['players'] as $player)@if ($player->id !== $set['active_player']['id'])<option value="{{ $player->id }}">{{ $player->name }}</option>@endif @endforeach @endif @endforeach</flux:select></div>@endforeach @endforeach</div>
+                            @error('manual')<p class="mt-2 text-sm text-rose-700">{{ $message }}</p>@enderror
+                        </div>
+                    @endif
                     <div class="mt-6 grid gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]"><div><flux:heading size="sm">Pełny skład</flux:heading><div class="mt-4 grid grid-cols-3 gap-3">@foreach ($variant['lineup'] as $slot)<div wire:key="lineup-{{ $variant['variant_key'] }}-{{ $slot['key'] }}" @class(['rounded-xl border p-3 text-center', 'border-zinc-200 bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-800' => $slot['player'], 'border-dashed border-amber-300 p-3 text-center' => ! $slot['player']]) style="grid-row: {{ $slot['grid_row'] ?? 'auto' }}; grid-column: {{ $slot['grid_column'] ?? 'auto' }};"><flux:text class="text-xs uppercase text-zinc-500">{{ $slot['abbreviation'] ?? $slot['key'] }}</flux:text><flux:text class="mt-1 text-sm font-medium">{{ $slot['player']?->name ?? 'Brak' }}</flux:text>@if ($slot['player'])<flux:text class="mt-1 text-xs text-zinc-600 dark:text-zinc-300">{{ $slot['player']->position->label() }} · {{ $slot['player']->training_bar }}%</flux:text><flux:badge class="mt-2" :color="$slot['source'] === 'optimized' ? 'sky' : 'zinc'">{{ $slot['source'] === 'optimized' ? 'optymalizowany' : 'bazowy' }}</flux:badge>@endif</div>@endforeach</div></div><div class="rounded-2xl border border-zinc-200 p-4 dark:border-zinc-700"><flux:heading size="sm">Ławka wariantu</flux:heading><flux:text class="mt-1 text-xs text-zinc-600 dark:text-zinc-300">Wymagana przez ten konkretny wariant.</flux:text><ul class="mt-4 space-y-2">@forelse (collect($variant['bench'])->filter() as $player)<li wire:key="bench-{{ $variant['variant_key'] }}-{{ $player->id }}" class="rounded-xl bg-zinc-50 p-3 dark:bg-zinc-800">{{ $player->name }} · {{ $player->position->label() }} · {{ $player->training_bar }}%</li>@empty<li class="text-sm text-zinc-600 dark:text-zinc-300">Ten wariant nie wymaga dodatkowych zawodników na ławce.</li>@endforelse</ul><flux:text class="mt-4 text-sm">{{ count(collect($variant['bench'])->filter()) }} zajęte · {{ count(collect($variant['bench'])->filter(fn ($player) => $player === null)) }} wolne miejsca</flux:text></div></div>
                     @if ($variant['send_blockers'] !== [])<flux:callout class="mt-6" icon="exclamation-triangle" color="red"><flux:callout.heading>Wariant nie może zostać wysłany</flux:callout.heading><flux:callout.text><ul class="mt-2 list-disc pl-5">@foreach ($variant['send_blockers'] as $blocker)<li wire:key="blocker-{{ $variant['variant_key'] }}-{{ $loop->index }}">{{ $blocker['message'] }}</li>@endforeach</ul></flux:callout.text></flux:callout>@endif
                     @php($diagnostics = $variant['training_diagnostics'])

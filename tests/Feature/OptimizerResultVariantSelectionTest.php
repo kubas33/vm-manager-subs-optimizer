@@ -6,6 +6,29 @@ use App\Models\Player;
 use App\VmSubstitutionService;
 use Livewire\Livewire;
 
+test('manual edit recalculates and rejects the same player in two slots', function () {
+    Player::factory()->forPosition(PlayerPosition::MiddleBlocker)->withVmPlayerId(801)->create(['training_bar' => 0]);
+    Player::factory()->forPosition(PlayerPosition::MiddleBlocker)->withVmPlayerId(802)->create(['training_bar' => 20]);
+
+    session()->put('optimizer.input', [
+        'positions' => [
+            ['value' => PlayerPosition::MiddleBlocker->value, 'label' => 'Środkowy'],
+            ['value' => PlayerPosition::MiddleBlocker->value, 'label' => 'Środkowy'],
+        ],
+        'fairness_threshold' => 20,
+        'reserve_pools' => [['position' => PlayerPosition::MiddleBlocker->value, 'position_label' => 'Środkowy', 'reserve_limit' => 0]],
+        'scenarios' => [MatchScenario::fromInput('25:20, 25:18, 25:22', 'Mecz')->toArray()],
+    ]);
+
+    $component = Livewire::test('pages::optimizer.result')->call('startManualEdit');
+    $plan = $component->get('activeVariant')['plan'];
+    $component->set('manualAssignments.2-1', (string) $plan['slots'][0]['sets'][0]['active_player']['id']);
+
+    expect($component->get('manualPreview')['send_blockers'])->toContain(['message' => 'Ten sam zawodnik zajmuje dwa sloty w secie 1.']);
+    $component->call('saveManualVariant')->assertHasErrors(['manual']);
+    expect($component->get('savedManualVariants'))->toBe([]);
+});
+
 test('selecting a variant keeps its lineup and bench visible', function () {
     foreach ([[PlayerPosition::Setter, 101], [PlayerPosition::Libero, 102], [PlayerPosition::Opposite, 103]] as [$position, $vmPlayerId]) {
         Player::factory()->forPosition($position)->withVmPlayerId($vmPlayerId)->create();

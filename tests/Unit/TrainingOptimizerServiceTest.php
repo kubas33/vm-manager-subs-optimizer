@@ -7,6 +7,40 @@ use App\SubstitutionPlanGenerator;
 use App\TrainingGainCalculator;
 use App\TrainingOptimizerService;
 
+test('optimizer retains a required player outside the default candidate pool', function () {
+    $scenario = MatchScenario::fromInput('25:20, 25:18, 25:22', 'Mecz');
+    $players = collect(range(1, 3))->map(fn (int $id): Player => Player::factory()->make(['id' => $id, 'name' => 'Setter '.$id, 'position' => PlayerPosition::Setter, 'training_bar' => $id * 10]))->all();
+    $optimizer = new TrainingOptimizerService(new TrainingGainCalculator, new SubstitutionPlanGenerator);
+    $plans = $optimizer->optimize([['slot_number' => 1, 'position' => PlayerPosition::Setter, 'reserve_limit' => 1, 'players' => $players]], $scenario, constraints: [['kind' => 'starter', 'player_id' => 3, 'position' => PlayerPosition::Setter->value, 'set_number' => 1]]);
+
+    expect($plans)->not->toBeEmpty();
+    foreach ($plans as $plan) {
+        expect($plan['plan']['slots'][0]['starter']['id'])->toBe(3);
+    }
+
+    $evaluation = $optimizer->evaluateCustomPlan($plans[0]['plan'], $scenario, [['slot_number' => 1, 'position' => PlayerPosition::Setter, 'players' => $players]]);
+    expect($evaluation['total_gained_training'])->toBe($plans[0]['total_gained_training'])
+        ->and($evaluation['training_diagnostics']['sets'])->toHaveCount(3);
+});
+
+test('custom plan evaluation immediately reflects set changes in gain, waste and final bars', function () {
+    $scenario = MatchScenario::fromInput('25:20, 25:18, 25:22', 'Mecz');
+    $full = Player::factory()->make(['id' => 91, 'name' => 'Full', 'position' => PlayerPosition::Setter, 'training_bar' => 100]);
+    $fresh = Player::factory()->make(['id' => 92, 'name' => 'Fresh', 'position' => PlayerPosition::Setter, 'training_bar' => 0]);
+    $slots = [['slot_number' => 1, 'position' => PlayerPosition::Setter, 'players' => [$full, $fresh]]];
+    $plans = (new SubstitutionPlanGenerator)->generate($slots, $scenario);
+    $stays = collect($plans)->first(fn (array $plan): bool => $plan['slots'][0]['starter']['id'] === $full->id && collect($plan['slots'][0]['sets'])->every(fn (array $set): bool => $set['active_player']['id'] === $full->id));
+    $switches = collect($plans)->first(fn (array $plan): bool => $plan['slots'][0]['starter']['id'] === $full->id && $plan['slots'][0]['sets'][0]['active_player']['id'] === $fresh->id && $plan['slots'][0]['sets'][1]['active_player']['id'] === $full->id && $plan['slots'][0]['sets'][2]['active_player']['id'] === $full->id);
+    $optimizer = new TrainingOptimizerService(new TrainingGainCalculator, new SubstitutionPlanGenerator);
+    $before = $optimizer->evaluateCustomPlan($stays, $scenario, $slots);
+    $after = $optimizer->evaluateCustomPlan($switches, $scenario, $slots);
+
+    expect($after['total_gained_training'])->toBeGreaterThan($before['total_gained_training'])
+        ->and($after['wasted_actions'])->toBeLessThan($before['wasted_actions'])
+        ->and(collect($after['player_results'])->firstWhere('id', $fresh->id)['final_training_bar'])->toBeGreaterThan(0)
+        ->and($after['training_diagnostics']['sets'][1]['wasted_actions'])->toBeLessThan($before['training_diagnostics']['sets'][1]['wasted_actions']);
+});
+
 test('training optimizer service ranks plans by final training bar sum', function () {
     $scenario = MatchScenario::fromInput('25:0, 25:0, 25:0', 'Łatwe 3:0');
 
