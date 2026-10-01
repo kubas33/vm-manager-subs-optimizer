@@ -8,7 +8,10 @@ import tailwindcss from "@tailwindcss/vite";
 export default defineConfig(({ mode }) => {
     const env = loadEnv(mode, process.cwd(), '');
     const configuredPort = Number.parseInt(env.VITE_PORT, 10);
-    const configuredHost = env.VITE_HOST ?? (env.LARAVEL_SAIL === '1' ? '0.0.0.0' : '127.0.0.1');
+    const port = Number.isNaN(configuredPort) ? 5173 : configuredPort;
+    const runningInSail = env.LARAVEL_SAIL === '1';
+    const configuredHost = env.VITE_HOST ?? (runningInSail ? '0.0.0.0' : '127.0.0.1');
+    const hmrHost = env.VITE_HMR_HOST ?? (runningInSail ? 'localhost' : configuredHost);
 
     return {
         plugins: [
@@ -20,8 +23,12 @@ export default defineConfig(({ mode }) => {
         ],
         server: {
             host: configuredHost,
-            port: Number.isNaN(configuredPort) ? 5173 : configuredPort,
+            port,
+            strictPort: true,
             cors: true,
+            hmr: {
+                host: hmrHost,
+            },
             watch: {
                 ignored: ['**/storage/framework/views/**'],
             },
