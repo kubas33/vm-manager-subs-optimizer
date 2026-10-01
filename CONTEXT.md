@@ -45,10 +45,14 @@ _Avoid_: Scenariusz 3:0, wyłącznie 3:2
 - Przyszły mechanizm ręcznego wymuszenia zawodnika na pozycji jest osobnym feature'em i nie należy go implementować w tym zakresie; obecny model powinien pozwolić dodać takie wymuszenie jako ograniczenie optymalizacji bez podmiany wariantu po jego wyliczeniu
 - Przyszłe ręczne wymuszenie zawodnika ma obowiązywać we wszystkich Wariantach planu zmian jako ograniczenie wejściowe optymalizacji dla wskazanej pozycji
 - Lista Wariantów planu zmian służy do wyboru, a jeden dynamiczny panel pokazuje pełny skład, ławkę i definicje zmian wybranego wariantu zamiast powielać te dane w każdej karcie
-- Wariant planu zmian bez żadnej rzeczywistej zmiany nie jest obliczany ani prezentowany; pojedynczy slot może jednak pozostać bez rezerwowego i bez zmiany, jeśli wynika to z limitu tego slotu
+- Wariant planu zmian bez żadnej rzeczywistej zmiany pozostaje prawidłowym wynikiem: prezentuje pełny skład i może zostać wysłany do VM bez reguł zmian; pojedynczy slot może też pozostać bez rezerwowego, jeśli wynika to z jego limitu
 - Wysyłka jest dostępna dla każdego poprawnego, zaprezentowanego Wariantu planu zmian i zapisuje jego pełną taktykę oraz reguły zmian
 - Ławka VM ma zawsze dokładnie pięć możliwych miejsc; suma limitów rezerwowych w konfiguracji wejściowej nie może przekroczyć pięciu, a warianty wymagające większej ławki nie są legalnym wynikiem optymalizacji
 - Pozycja z limitem rezerwowych `0` nadal ma startera w każdym pełnym wariancie, ale nie generuje dla tej pozycji zmian ani zawodników na ławce
+- Wybór typu pozycji rozwija się do wszystkich jego fizycznych slotów: **Przyjmujący** i **Środkowy** mają po dwa sloty, a pozostałe typy po jednym
+- Powtórzenie typu pozycji nie tworzy dodatkowych slotów; kanoniczny wybór deduplikuje typy w kolejności pierwszego wystąpienia, więc `Środkowy + Środkowy` analizuje dokładnie `middle_1` i `middle_2`
+- Jedna pula rezerwowych i jeden limit `candidate_limit = liczba fizycznych slotów + reserve_limit` obowiązują dla każdego distinct typu pozycji; duplikaty nie sumują ani nie dublują limitu
+- Dla konfiguracji obejmujących 4–5 fizycznych slotów optymalizator korzysta z ograniczonego planera zachłannego, aby uniknąć niebezpiecznej eksplozji pełnej enumeracji; konfiguracje 1–3 slotów zachowują dotychczasowy wybór planera
 
 ## Example dialogue
 

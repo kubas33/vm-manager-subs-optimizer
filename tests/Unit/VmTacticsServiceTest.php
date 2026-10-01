@@ -161,7 +161,7 @@ test('push recommendation sends local reserves without reading existing tactics'
     Http::assertSentCount(1);
 });
 
-test('variant tactics posts the provided starting lineup with the selected plan reserves', function () {
+test('variant tactics posts the provided starting lineup and reserves', function () {
     config()->set('vm-manager.api_url', 'https://faster.vm-manager.org');
     config()->set('vm-manager.api_token', 'tactics-token');
 
@@ -170,18 +170,22 @@ test('variant tactics posts the provided starting lineup with the selected plan 
     ]);
 
     $payload = (new VmTacticsService)->pushVariantTactics([
-        ['playerIn' => 206, 'playerOut' => 101],
-        ['playerIn' => 202, 'playerOut' => 105],
-        ['playerIn' => 206, 'playerOut' => 101],
-    ], [101, 102, 103, 104, 105, 106, 107]);
+        101, 102, 103, 104, 105, 106, 107,
+    ], [206, 202, 206, 203, 204, 205]);
 
     expect($payload)->toMatchArray([
         'player1' => 101,
+        'player2' => 102,
+        'player3' => 103,
+        'player4' => 104,
+        'player5' => 105,
+        'player6' => 106,
         'player7' => 107,
         'player8' => 206,
         'player9' => 202,
-        'player10' => null,
-        'player12' => null,
+        'player10' => 203,
+        'player11' => 204,
+        'player12' => 205,
         'block1' => 7,
         'blockPassive3' => 0,
     ]);
@@ -193,7 +197,9 @@ test('variant tactics posts the provided starting lineup with the selected plan 
             && $request['player7'] === 107
             && $request['player8'] === 206
             && $request['player9'] === 202
-            && $request['player10'] === null
+            && $request['player10'] === 203
+            && $request['player11'] === 204
+            && $request['player12'] === 205
             && $request['block1'] === 7
             && $request['blockPassive3'] === 0;
     });

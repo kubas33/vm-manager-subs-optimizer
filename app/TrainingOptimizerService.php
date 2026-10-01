@@ -59,6 +59,7 @@ final class TrainingOptimizerService
         int $limit = 10,
         int $fairnessThreshold = 20,
         bool $safeMode = false,
+        array $constraints = [],
     ): array {
         return $this->optimizeWithScenarios(
             slotDefinitions: $slotDefinitions,
@@ -67,6 +68,7 @@ final class TrainingOptimizerService
             limit: $limit,
             fairnessThreshold: $fairnessThreshold,
             safeMode: $safeMode,
+            constraints: $constraints,
         );
     }
 
@@ -76,6 +78,7 @@ final class TrainingOptimizerService
         int $limit = 10,
         int $fairnessThreshold = 20,
         bool $safeMode = false,
+        array $constraints = [],
     ): array {
         $scenarios = array_values($scenarioSet->scenarios);
 
@@ -86,7 +89,16 @@ final class TrainingOptimizerService
             limit: $limit,
             fairnessThreshold: $fairnessThreshold,
             safeMode: $safeMode,
+            constraints: $constraints,
         );
+    }
+
+    public function evaluateCustomPlan(array $plan, MatchScenario $scenario, array $slotDefinitions, int $fairnessThreshold = 20): array
+    {
+        $evaluation = $this->evaluatePlan($plan, $scenario, $slotDefinitions, $fairnessThreshold);
+        $evaluation['training_diagnostics'] = (new TrainingPlanDiagnostics)->analyze($plan, $slotDefinitions, $scenario);
+
+        return $evaluation;
     }
 
     /**
@@ -136,6 +148,7 @@ final class TrainingOptimizerService
         int $limit,
         int $fairnessThreshold,
         bool $safeMode,
+        array $constraints,
     ): array {
         $fairnessThreshold = max(0, min(100, $fairnessThreshold));
 
@@ -150,7 +163,7 @@ final class TrainingOptimizerService
             'slot_definitions' => $this->summarizeSlotDefinitions($slotDefinitions),
         ]);
 
-        $selectedCandidates = $this->selectCandidatesForOptimization($slotDefinitions);
+        $selectedCandidates = $this->selectCandidatesForOptimization($slotDefinitions, $constraints);
         $useGreedyPlanner = $this->shouldUseGreedyPlanner($selectedCandidates);
 
         $this->debugOptimizer('optimizer.candidates.selected', [
@@ -159,24 +172,40 @@ final class TrainingOptimizerService
         ]);
 
         $plans = $useGreedyPlanner
-            ? $this->substitutionPlanGenerator->generateGreedy($selectedCandidates, $templateScenario)
-            : $this->substitutionPlanGenerator->generate($selectedCandidates, $templateScenario);
+            ? $this->substitutionPlanGenerator->generateGreedy($selectedCandidates, $templateScenario, $constraints)
+            : $this->substitutionPlanGenerator->generate($selectedCandidates, $templateScenario, $constraints);
 
         $this->debugOptimizer('optimizer.plans.generated', [
             'planner' => $useGreedyPlanner ? 'greedy' : 'exhaustive',
             'count' => count($plans),
         ]);
 
-        $rankedPlans = array_map(
-            fn (array $plan): array => $this->evaluatePlanAcrossScenarios(
-                $plan,
-                $scenarios,
-                $selectedCandidates,
-                $fairnessThreshold,
-                $safeMode,
-            ),
-            $plans,
-        );
+        $rankedPlans = [];
+        $refiner = new TrainingPlanRefiner($this->substitutionPlanGenerator);
+        $seenPlans = [];
+
+        foreach ($plans as $plan) {
+            $refined = $useGreedyPlanner ? $refiner->refine($plan, $selectedCandidates, $scenarios, $safeMode) : null;
+            $alternatives = [['plan' => $plan, 'gain' => 0]];
+
+            if ($refined !== null && $refined['gained_training_after'] > $refined['gained_training_before'] && $this->substitutionPlanGenerator->satisfiesConstraints($refined['plan'], $constraints)) {
+                array_unshift($alternatives, ['plan' => $refined['plan'], 'gain' => $refined['gained_training_after'] - $refined['gained_training_before']]);
+            }
+
+            foreach ($alternatives as $alternative) {
+                $signature = json_encode($alternative['plan'], JSON_THROW_ON_ERROR);
+
+                if (isset($seenPlans[$signature])) {
+                    continue;
+                }
+
+                $seenPlans[$signature] = true;
+                $rankedPlans[] = [
+                    ...$this->evaluatePlanAcrossScenarios($alternative['plan'], $scenarios, $selectedCandidates, $fairnessThreshold, $safeMode),
+                    'refinement_gained_training' => $alternative['gain'],
+                ];
+            }
+        }
 
         usort($rankedPlans, fn (array $left, array $right): int => $this->compareRankedPlans($left, $right));
 
@@ -222,26 +251,40 @@ final class TrainingOptimizerService
             ]);
         }
 
-        return array_slice($rankedPlans, 0, max(1, $limit));
+        $diagnostics = new TrainingPlanDiagnostics;
+
+        return array_map(function (array $result) use ($diagnostics, $selectedCandidates, $scenarios, $safeMode): array {
+            foreach ($result['scenario_results'] as $index => &$scenarioResult) {
+                $scenarioResult['training_diagnostics'] = $diagnostics->analyze($result['plan'], $selectedCandidates, $scenarios[$index]);
+
+                if (count($scenarios) === 1 || ($safeMode && $scenarioResult['is_worst_case'])) {
+                    $result['training_diagnostics'] = $scenarioResult['training_diagnostics'];
+                }
+            }
+
+            return $result;
+        }, array_slice($rankedPlans, 0, max(1, $limit)));
     }
 
     /**
      * @param  array<int, array{slot_number: int, position: PlayerPosition, reserve_limit?: int, players: array<int, Player>}>  $slotDefinitions
      * @return array<int, array{slot_number: int, position: PlayerPosition, players: array<int, Player>}>
      */
-    protected function selectCandidatesForOptimization(array $slotDefinitions): array
+    protected function selectCandidatesForOptimization(array $slotDefinitions, array $constraints = []): array
     {
         return collect($slotDefinitions)
             ->groupBy(fn (array $slotDefinition): string => $slotDefinition['position']->value)
-            ->flatMap(function ($group): array {
+            ->flatMap(function ($group) use ($constraints): array {
                 $groupSlots = $group->values()->all();
                 $slotCount = count($groupSlots);
                 $reserveLimit = (int) ($groupSlots[0]['reserve_limit'] ?? 0);
                 $candidateLimit = $slotCount + $reserveLimit;
 
+                $excludedIds = collect($constraints)->where('kind', 'exclude')->pluck('player_id')->all();
+                $requiredIds = collect($constraints)->whereIn('kind', ['starter', 'set', 'reserve_only'])->pluck('player_id')->all();
                 $players = collect($groupSlots)
                     ->flatMap(fn (array $slotDefinition): array => $slotDefinition['players'])
-                    ->reject(fn (Player $player): bool => $player->isInjured)
+                    ->reject(fn (Player $player): bool => $player->isInjured || in_array($player->id, $excludedIds, true))
                     ->unique(fn (Player $player): int => $player->id)
                     ->sort(function (Player $left, Player $right): int {
                         if ($left->training_bar !== $right->training_bar) {
@@ -259,6 +302,18 @@ final class TrainingOptimizerService
                     ->take($candidateLimit)
                     ->values()
                     ->all();
+
+                foreach ($groupSlots[0]['players'] as $requiredPlayer) {
+                    if (in_array($requiredPlayer->id, $requiredIds, true) && ! in_array($requiredPlayer->id, array_column($players, 'id'), true)) {
+                        $players[] = $requiredPlayer;
+                    }
+                }
+
+                if (count($players) > $candidateLimit) {
+                    $players = array_values(array_filter($players, fn (Player $player): bool => in_array($player->id, $requiredIds, true)));
+                    $optional = collect($groupSlots[0]['players'])->reject(fn (Player $player): bool => $player->isInjured || in_array($player->id, $excludedIds, true) || in_array($player->id, $requiredIds, true))->sortBy('training_bar')->take(max(0, $candidateLimit - count($players)))->all();
+                    $players = [...$players, ...array_values($optional)];
+                }
 
                 $this->debugOptimizer('optimizer.candidates.group', [
                     'position' => $groupSlots[0]['position']->value ?? null,
@@ -290,7 +345,7 @@ final class TrainingOptimizerService
      */
     protected function shouldUseGreedyPlanner(array $slotDefinitions): bool
     {
-        return collect($slotDefinitions)
+        return count($slotDefinitions) >= 4 || collect($slotDefinitions)
             ->groupBy(fn (array $slotDefinition): string => $slotDefinition['position']->value)
             ->contains(fn ($group): bool => count($group->first()['players'] ?? []) > 5);
     }

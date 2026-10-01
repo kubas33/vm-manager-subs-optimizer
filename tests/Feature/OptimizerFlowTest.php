@@ -58,9 +58,9 @@ test('optimizer form stores normalized preset input and redirects to result page
             [
                 'position' => PlayerPosition::MiddleBlocker->value,
                 'position_label' => PlayerPosition::MiddleBlocker->label(),
-                'slot_count' => 1,
+                'slot_count' => 2,
                 'reserve_limit' => 3,
-                'candidate_limit' => 4,
+                'candidate_limit' => 5,
             ],
         ],
     ]);
@@ -83,6 +83,187 @@ test('optimizer form stores normalized preset input and redirects to result page
         ->assertSee('Strata')
         ->assertSee('Setter Alpha')
         ->assertSee('Middle Alpha');
+});
+
+test('optimizer form marks a singleton position ready with one player and no reserves', function () {
+    $this->actingAs(User::factory()->create());
+
+    Player::factory()->forPosition(PlayerPosition::Setter)->create();
+
+    $component = Livewire::test('pages::optimizer.create')
+        ->set('primaryPosition', PlayerPosition::Setter->value)
+        ->set('secondaryPosition', PlayerPosition::Setter->value)
+        ->set('sharedReserveLimit', '0')
+        ->assertSee('gotowe')
+        ->assertDontSee('uzupełnij');
+
+    expect(collect($component->get('selectedPositionSummaries'))->pluck('required_players')->unique()->all())
+        ->toBe([1]);
+
+    $component
+        ->set('sharedReserveLimit', '1')
+        ->assertSee('uzupełnij');
+});
+
+test('optimizer form marks a dual position ready when both physical slots have players and no reserves', function () {
+    $this->actingAs(User::factory()->create());
+
+    Player::factory()->count(2)->forPosition(PlayerPosition::OutsideHitter)->create();
+
+    $component = Livewire::test('pages::optimizer.create')
+        ->set('primaryPosition', PlayerPosition::OutsideHitter->value)
+        ->set('secondaryPosition', PlayerPosition::OutsideHitter->value)
+        ->set('sharedReserveLimit', '0')
+        ->assertSee('gotowe')
+        ->assertDontSee('uzupełnij');
+
+    expect(collect($component->get('selectedPositionSummaries'))->pluck('required_players')->unique()->all())
+        ->toBe([2]);
+});
+
+test('optimizer form expands one selected outside hitter to both physical slots', function () {
+    $this->actingAs(User::factory()->create());
+
+    Livewire::test('pages::optimizer.create')
+        ->set('primaryPosition', PlayerPosition::OutsideHitter->value)
+        ->set('secondaryPosition', PlayerPosition::Setter->value)
+        ->set('reserveLimitsByPosition.'.PlayerPosition::OutsideHitter->value, '2')
+        ->set('reserveLimitsByPosition.'.PlayerPosition::Setter->value, '1')
+        ->call('submit')
+        ->assertHasNoErrors()
+        ->assertRedirect(route('optimizer.result'));
+
+    expect(collect(session('optimizer.input.positions'))->pluck('value')->all())
+        ->toBe([
+            PlayerPosition::OutsideHitter->value,
+            PlayerPosition::OutsideHitter->value,
+            PlayerPosition::Setter->value,
+        ])
+        ->and(session('optimizer.input.reserve_pools'))->toBe([
+            [
+                'position' => PlayerPosition::OutsideHitter->value,
+                'position_label' => PlayerPosition::OutsideHitter->label(),
+                'slot_count' => 2,
+                'reserve_limit' => 2,
+                'candidate_limit' => 4,
+            ],
+            [
+                'position' => PlayerPosition::Setter->value,
+                'position_label' => PlayerPosition::Setter->label(),
+                'slot_count' => 1,
+                'reserve_limit' => 1,
+                'candidate_limit' => 2,
+            ],
+        ]);
+});
+
+test('optimizer form expands outside hitter and middle blocker selections to all four physical slots', function () {
+    $this->actingAs(User::factory()->create());
+
+    Livewire::test('pages::optimizer.create')
+        ->set('primaryPosition', PlayerPosition::OutsideHitter->value)
+        ->set('secondaryPosition', PlayerPosition::MiddleBlocker->value)
+        ->set('reserveLimitsByPosition.'.PlayerPosition::OutsideHitter->value, '1')
+        ->set('reserveLimitsByPosition.'.PlayerPosition::MiddleBlocker->value, '2')
+        ->call('submit')
+        ->assertHasNoErrors()
+        ->assertRedirect(route('optimizer.result'));
+
+    expect(collect(session('optimizer.input.positions'))->pluck('value')->all())
+        ->toBe([
+            PlayerPosition::OutsideHitter->value,
+            PlayerPosition::OutsideHitter->value,
+            PlayerPosition::MiddleBlocker->value,
+            PlayerPosition::MiddleBlocker->value,
+        ])
+        ->and(session('optimizer.input.reserve_pools'))->toBe([
+            [
+                'position' => PlayerPosition::OutsideHitter->value,
+                'position_label' => PlayerPosition::OutsideHitter->label(),
+                'slot_count' => 2,
+                'reserve_limit' => 1,
+                'candidate_limit' => 3,
+            ],
+            [
+                'position' => PlayerPosition::MiddleBlocker->value,
+                'position_label' => PlayerPosition::MiddleBlocker->label(),
+                'slot_count' => 2,
+                'reserve_limit' => 2,
+                'candidate_limit' => 4,
+            ],
+        ]);
+});
+
+test('optimizer form normalizes five physical slots in first-seen selector order', function () {
+    $this->actingAs(User::factory()->create());
+
+    Livewire::test('pages::optimizer.create')
+        ->set('primaryPosition', PlayerPosition::Setter->value)
+        ->set('secondaryPosition', PlayerPosition::OutsideHitter->value)
+        ->call('addThirdSlot')
+        ->set('tertiaryPosition', PlayerPosition::MiddleBlocker->value)
+        ->set('reserveLimitsByPosition.'.PlayerPosition::Setter->value, '0')
+        ->set('reserveLimitsByPosition.'.PlayerPosition::OutsideHitter->value, '0')
+        ->set('reserveLimitsByPosition.'.PlayerPosition::MiddleBlocker->value, '0')
+        ->call('submit')
+        ->assertHasNoErrors()
+        ->assertRedirect(route('optimizer.result'));
+
+    expect(collect(session('optimizer.input.positions'))->pluck('value')->all())
+        ->toBe([
+            PlayerPosition::Setter->value,
+            PlayerPosition::OutsideHitter->value,
+            PlayerPosition::OutsideHitter->value,
+            PlayerPosition::MiddleBlocker->value,
+            PlayerPosition::MiddleBlocker->value,
+        ])
+        ->and(session('optimizer.input.reserve_pools'))->toBe([
+            [
+                'position' => PlayerPosition::Setter->value,
+                'position_label' => PlayerPosition::Setter->label(),
+                'slot_count' => 1,
+                'reserve_limit' => 0,
+                'candidate_limit' => 1,
+            ],
+            [
+                'position' => PlayerPosition::OutsideHitter->value,
+                'position_label' => PlayerPosition::OutsideHitter->label(),
+                'slot_count' => 2,
+                'reserve_limit' => 0,
+                'candidate_limit' => 2,
+            ],
+            [
+                'position' => PlayerPosition::MiddleBlocker->value,
+                'position_label' => PlayerPosition::MiddleBlocker->label(),
+                'slot_count' => 2,
+                'reserve_limit' => 0,
+                'candidate_limit' => 2,
+            ],
+        ]);
+});
+
+test('optimizer form canonicalizes duplicate singleton selectors to one physical slot', function () {
+    $this->actingAs(User::factory()->create());
+
+    Livewire::test('pages::optimizer.create')
+        ->set('primaryPosition', PlayerPosition::Setter->value)
+        ->set('secondaryPosition', PlayerPosition::Setter->value)
+        ->set('sharedReserveLimit', '0')
+        ->call('submit')
+        ->assertHasNoErrors()
+        ->assertRedirect(route('optimizer.result'));
+
+    expect(collect(session('optimizer.input.positions'))->pluck('value')->all())
+        ->toBe([PlayerPosition::Setter->value])
+        ->and(session('optimizer.input.reserve_pools'))->toBe([
+            [
+                'position' => PlayerPosition::Setter->value,
+                'position_label' => PlayerPosition::Setter->label(),
+                'slot_count' => 1,
+                'reserve_limit' => 0,
+                'candidate_limit' => 1,
+            ],
+        ]);
 });
 
 test('optimizer form allows the same position in both analyzed slots', function () {

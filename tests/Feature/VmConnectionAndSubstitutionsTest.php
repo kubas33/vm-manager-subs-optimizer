@@ -108,12 +108,12 @@ test('chosen optimizer variant sends VM substitutions only after its action usin
     });
 
     Livewire::test('pages::optimizer.result')
-        ->assertSee('Wyślij skład i zmiany do gry')
+        ->assertSee('Wyślij ten wariant do VM Managera')
         ->assertDontSee('Połączenie z VM Manager')
         ->set('tacticsMatchType', 'Friendly')
         ->call('pushSubstitutions', 0)
         ->assertHasNoErrors()
-        ->assertSee('Zapisano zmian:');
+        ->assertSee('Zapisano reguł VM:');
 
     Http::assertSent(fn (Request $request): bool => $request->method() === 'POST'
         && str_ends_with($request->url(), '/api/tactics')
@@ -153,7 +153,7 @@ test('chosen optimizer variant sends its reserve in the full VM tactics payload 
     $component
         ->call('pushSubstitutions', 0)
         ->assertHasNoErrors()
-        ->assertSee('Zapisano zmian:');
+        ->assertSee('Zapisano reguł VM:');
 
     Http::assertSentInOrder([
         function (Request $request) use ($benchPlayerIds): bool {

@@ -26,6 +26,24 @@ new #[Title('Optymalizacja')] class extends Component
     public bool $scenarioSafetyMode = false;
     /** @var array<string, string> */
     public array $reserveLimitsByPosition = [];
+    public array $playerConstraints = [];
+
+    #[Computed]
+    public function constraintPlayers(): array
+    {
+        return Player::query()->available()->whereIn('position', $this->distinctSelectedPositions())->orderBy('position')->orderBy('name')->get()->map(fn (Player $player): array => ['id' => $player->id, 'name' => $player->name, 'position' => $player->position->value])->all();
+    }
+
+    public function addPlayerConstraint(): void
+    {
+        $this->playerConstraints[] = ['kind' => 'starter', 'player_id' => '', 'position' => '', 'set_number' => '1'];
+    }
+
+    public function removePlayerConstraint(int $index): void
+    {
+        unset($this->playerConstraints[$index]);
+        $this->playerConstraints = array_values($this->playerConstraints);
+    }
 
     public function mount(): void
     {
@@ -100,7 +118,7 @@ new #[Title('Optymalizacja')] class extends Component
     }
 
     /**
-     * @return array<int, array{value: string, label: string, active_players: int}>
+     * @return array<int, array{value: string, label: string, active_players: int, required_players: int}>
      */
     #[Computed]
     public function selectedPositionSummaries(): array
@@ -132,6 +150,7 @@ new #[Title('Optymalizacja')] class extends Component
                     'value' => $value,
                     'label' => $position->label(),
                     'active_players' => (int) ($counts[$value] ?? 0),
+                    'required_players' => $this->requiredActivePlayers($value),
                 ];
             })
             ->filter()
@@ -295,6 +314,7 @@ new #[Title('Optymalizacja')] class extends Component
             $draft['reserveLimitsByPosition'] ?? null,
             $this->reserveLimitsByPosition,
         );
+        $this->playerConstraints = is_array($draft['playerConstraints'] ?? null) ? array_values($draft['playerConstraints']) : [];
 
         $this->syncReserveLimitState();
         $this->resetValidation();
@@ -426,6 +446,11 @@ new #[Title('Optymalizacja')] class extends Component
             'multipleScenarios' => [Rule::requiredIf($this->scenarioMode === 'multiple'), 'string'],
             'fairnessThreshold' => ['required', 'integer', 'min:0', 'max:100'],
             'scenarioSafetyMode' => ['boolean'],
+            'playerConstraints' => ['array', 'max:12'],
+            'playerConstraints.*.kind' => ['required', Rule::in(['starter', 'set', 'exclude', 'reserve_only'])],
+            'playerConstraints.*.player_id' => ['required', 'integer', 'exists:players,id'],
+            'playerConstraints.*.position' => ['nullable', Rule::enum(PlayerPosition::class)],
+            'playerConstraints.*.set_number' => ['nullable', 'integer', 'min:1', 'max:5'],
         ];
 
         if ($this->usesSharedReservePool()) {
@@ -481,6 +506,29 @@ new #[Title('Optymalizacja')] class extends Component
     {
         $validator = Validator::make($this->validationData(), $this->rules(), $this->messages());
 
+        $validator->after(function ($validator): void {
+            $players = collect($this->constraintPlayers())->keyBy('id');
+            $positions = $this->distinctSelectedPositions();
+            $maxSets = collect($this->scenarioPreview)->max('sets_count') ?? 0;
+            foreach ($this->playerConstraints as $index => $constraint) {
+                $player = $players->get((int) ($constraint['player_id'] ?? 0));
+                $kind = $constraint['kind'] ?? '';
+                if (! $player) {
+                    $validator->errors()->add("playerConstraints.$index.player_id", 'Wybierz dostępnego zawodnika z analizowanej pozycji.');
+                    continue;
+                }
+                if (in_array($kind, ['starter', 'set'], true) && (! in_array($constraint['position'] ?? '', $positions, true) || $constraint['position'] !== $player['position'])) {
+                    $validator->errors()->add("playerConstraints.$index.position", 'Pozycja musi odpowiadać zawodnikowi i analizowanym slotom.');
+                }
+                if ($kind === 'set' && (int) ($constraint['set_number'] ?? 0) > $maxSets) {
+                    $validator->errors()->add("playerConstraints.$index.set_number", 'Ten set nie występuje w wybranym scenariuszu.');
+                }
+                if (in_array($kind, ['starter', 'set'], true) && collect($this->playerConstraints)->contains(fn (array $other): bool => (int) ($other['player_id'] ?? 0) === $player['id'] && in_array($other['kind'] ?? '', ['exclude', 'reserve_only'], true) && ($kind === 'starter' || $other['kind'] === 'exclude'))) {
+                    $validator->errors()->add("playerConstraints.$index.kind", 'Sprzeczne zasady dla zawodnika.');
+                }
+            }
+        });
+
         if (! $this->usesSharedReservePool()) {
             $validator->after(function ($validator): void {
                 $sum = collect($this->distinctSelectedPositions())
@@ -533,6 +581,7 @@ new #[Title('Optymalizacja')] class extends Component
                 ? 'Bezpieczny'
                 : 'Standardowy',
             'reserve_pools' => $this->normalizeReservePools($validated),
+            'player_constraints' => collect($validated['playerConstraints'] ?? [])->map(fn (array $constraint): array => ['kind' => $constraint['kind'], 'player_id' => (int) $constraint['player_id'], 'position' => $constraint['position'] ?: (Player::query()->find($constraint['player_id'])?->position->value ?? ''), 'set_number' => (int) ($constraint['set_number'] ?? 1)])->all(),
             'scenarios' => $this->buildScenarioSet($validated)->toArray(),
         ];
     }
@@ -543,7 +592,7 @@ new #[Title('Optymalizacja')] class extends Component
      */
     protected function normalizePositions(array $validated): array
     {
-        $positions = $this->selectedPositions($validated);
+        $positions = $this->canonicalSelectedPositions($validated);
         $counts = Player::query()
             ->active()
             ->whereIn('position', $positions)
@@ -566,7 +615,7 @@ new #[Title('Optymalizacja')] class extends Component
      */
     protected function normalizeReservePools(array $validated): array
     {
-        $slotCounts = collect($this->selectedPositions($validated))
+        $slotCounts = collect($this->canonicalSelectedPositions($validated))
             ->countBy();
 
         return $slotCounts
@@ -701,6 +750,7 @@ new #[Title('Optymalizacja')] class extends Component
             'scenarioSafetyMode' => $this->scenarioSafetyMode,
             'sharedReserveLimit' => $this->sharedReserveLimit,
             'reserveLimitsByPosition' => $this->reserveLimitsByPosition,
+            'playerConstraints' => $this->playerConstraints,
         ];
     }
 
@@ -753,6 +803,41 @@ new #[Title('Optymalizacja')] class extends Component
         }
 
         return $positions;
+    }
+
+    /**
+     * Expand each selected position type to its unique physical court slots.
+     *
+     * @param  array<string, mixed>|null  $values
+     * @return array<int, string>
+     */
+    protected function canonicalSelectedPositions(?array $values = null): array
+    {
+        return collect($this->selectedPositions($values))
+            ->filter()
+            ->unique()
+            ->flatMap(function (string $position): array {
+                return array_fill(0, $this->physicalSlotCount($position), $position);
+            })
+            ->values()
+            ->all();
+    }
+
+    protected function physicalSlotCount(string $position): int
+    {
+        return match (PlayerPosition::from($position)) {
+            PlayerPosition::OutsideHitter, PlayerPosition::MiddleBlocker => 2,
+            default => 1,
+        };
+    }
+
+    protected function requiredActivePlayers(string $position): int
+    {
+        $reserveLimit = $this->usesSharedReservePool()
+            ? (int) $this->sharedReserveLimit
+            : (int) ($this->reserveLimitsByPosition[$position] ?? 0);
+
+        return $this->physicalSlotCount($position) + $reserveLimit;
     }
 
     protected function syncReserveLimitState(): void
@@ -815,7 +900,7 @@ new #[Title('Optymalizacja')] class extends Component
         <div class="space-y-2">
             <flux:heading size="xl" level="1">Optymalizacja składu</flux:heading>
             <flux:text class="max-w-2xl text-zinc-600 dark:text-zinc-300">
-                Wybierz od dwóch do trzech pozycji, tryb scenariusza i przebieg meczu.
+                Wybierz od dwóch do trzech typów pozycji (selectorów), tryb scenariusza i przebieg meczu. Po rozwinięciu typów analiza obejmuje od 1 do 5 fizycznych slotów.
             </flux:text>
         </div>
 
@@ -836,7 +921,7 @@ new #[Title('Optymalizacja')] class extends Component
                     <div>
                         <flux:heading size="base">Pozycje do analizy</flux:heading>
                         <flux:text class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
-                            Analizujemy dwa lub trzy sloty boiskowe. Sloty mogą wskazywać tę samą pozycję, np. dwóch środkowych.
+                            Każdy typ pozycji rozwija się do jego fizycznych slotów: przyjmujący i środkowy obejmują po dwa sloty. Powtórzenie typu nie tworzy dodatkowych slotów.
                         </flux:text>
                     </div>
 
@@ -914,7 +999,7 @@ new #[Title('Optymalizacja')] class extends Component
                     <div>
                         <flux:heading size="base">Pula rezerwowych</flux:heading>
                         <flux:text class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
-                            Dla jednakowych pozycji ustawiasz jedną wspólną pulę. Dla różnych pozycji ustawiasz osobne limity, a ich suma nie może przekroczyć 5.
+                            Każdy typ pozycji ma jedną pulę rezerwowych współdzieloną przez jego fizyczne sloty. Dla różnych typów ustawiasz osobne limity, a ich suma nie może przekroczyć 5.
                         </flux:text>
                     </div>
 
@@ -928,7 +1013,7 @@ new #[Title('Optymalizacja')] class extends Component
                                 label="Wspólna pula rezerwowych"
                             />
                             <flux:text class="mt-2 text-sm text-zinc-600 dark:text-zinc-300">
-                                Ten limit dotyczy obu slotów dla pozycji {{ PlayerPosition::from($primaryPosition)->label() }}.
+                                Ten limit dotyczy wszystkich fizycznych slotów pozycji {{ PlayerPosition::from($primaryPosition)->label() }}.
                             </flux:text>
                             @error('sharedReserveLimit')
                                 <flux:text class="mt-2 text-sm text-rose-600 dark:text-rose-400">{{ $message }}</flux:text>
@@ -950,7 +1035,7 @@ new #[Title('Optymalizacja')] class extends Component
                         </div>
 
                         <flux:text class="text-sm text-zinc-600 dark:text-zinc-300">
-                            Suma obu pól nie może przekroczyć 5 rezerwowych.
+                            Suma limitów dla różnych typów pozycji nie może przekroczyć 5 rezerwowych.
                         </flux:text>
 
                         @error('reserveLimitsByPosition')
@@ -965,6 +1050,26 @@ new #[Title('Optymalizacja')] class extends Component
                             @enderror
                         @endforeach
                     @endif
+                </div>
+
+                <div class="space-y-4">
+                    <div class="flex items-center justify-between gap-3">
+                        <div><flux:heading size="base">Ograniczenia zawodników</flux:heading><flux:text class="text-sm">Zasady obowiązują każdy wygenerowany wariant.</flux:text></div>
+                        <flux:button type="button" size="sm" wire:click="addPlayerConstraint">Dodaj zasadę</flux:button>
+                    </div>
+                    @foreach ($playerConstraints as $index => $constraint)
+                        <div wire:key="constraint-{{ $index }}" class="grid gap-3 rounded-xl border border-zinc-200 p-3 dark:border-zinc-700 md:grid-cols-4">
+                            <flux:select wire:model.live="playerConstraints.{{ $index }}.kind" label="Zasada"><option value="starter">Starter na pozycji</option><option value="set">Gra w secie</option><option value="exclude">Wyklucz</option><option value="reserve_only">Tylko rezerwowy</option></flux:select>
+                            <flux:select wire:model.live="playerConstraints.{{ $index }}.player_id" label="Zawodnik"><option value="">Wybierz</option>@foreach ($this->constraintPlayers as $player)<option value="{{ $player['id'] }}">{{ $player['name'] }}</option>@endforeach</flux:select>
+                            @if (in_array($constraint['kind'], ['starter', 'set'], true))
+                                <flux:select wire:model.live="playerConstraints.{{ $index }}.position" label="Pozycja"><option value="">Wybierz</option>@foreach ($this->distinctSelectedPositions() as $position)<option value="{{ $position }}">{{ PlayerPosition::from($position)->label() }}</option>@endforeach</flux:select>
+                            @endif
+                            @if ($constraint['kind'] === 'set')<flux:input type="number" min="1" max="5" wire:model="playerConstraints.{{ $index }}.set_number" label="Set" />@endif
+                            <flux:button type="button" variant="ghost" wire:click="removePlayerConstraint({{ $index }})">Usuń</flux:button>
+                            @foreach (['kind', 'player_id', 'position', 'set_number'] as $field)@error("playerConstraints.$index.$field")<flux:text class="text-sm text-rose-600">{{ $message }}</flux:text>@enderror@endforeach
+                        </div>
+                    @endforeach
+                    @error('playerConstraints')<flux:text class="text-sm text-rose-600">{{ $message }}</flux:text>@enderror
                 </div>
 
                 <div class="space-y-4">
@@ -1072,8 +1177,8 @@ new #[Title('Optymalizacja')] class extends Component
                                         {{ $summary['active_players'] }} aktywnych zawodników dla tej pozycji
                                     </flux:text>
                                 </div>
-                                <flux:badge :color="$summary['active_players'] >= 2 ? 'emerald' : 'amber'">
-                                    {{ $summary['active_players'] >= 2 ? 'gotowe' : 'uzupełnij' }}
+                                <flux:badge :color="$summary['active_players'] >= $summary['required_players'] ? 'emerald' : 'amber'">
+                                    {{ $summary['active_players'] >= $summary['required_players'] ? 'gotowe' : 'uzupełnij' }}
                                 </flux:badge>
                             </div>
                         @endforeach
