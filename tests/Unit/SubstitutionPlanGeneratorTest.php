@@ -245,3 +245,24 @@ test('greedy generator supports five analyzed slots', function () {
     expect($plans)->not->toBeEmpty()
         ->and($plans[0]['slots'])->toHaveCount(5);
 });
+
+test('fixed starter IDs preserve individual court slots for both planners', function () {
+    $players = collect([1, 2, 3])->map(fn (int $id): Player => Player::factory()->make(['id' => $id, 'position' => PlayerPosition::MiddleBlocker, 'training_bar' => 10]))->all();
+    $slots = [
+        ['slot_number' => 1, 'position' => PlayerPosition::MiddleBlocker, 'starter_id' => 2, 'players' => $players],
+        ['slot_number' => 2, 'position' => PlayerPosition::MiddleBlocker, 'starter_id' => 1, 'players' => $players],
+    ];
+    $constraints = [
+        ['kind' => 'starter', 'player_id' => 1, 'position' => PlayerPosition::MiddleBlocker->value],
+        ['kind' => 'starter', 'player_id' => 2, 'position' => PlayerPosition::MiddleBlocker->value],
+        ['kind' => 'reserve_only', 'player_id' => 3, 'position' => PlayerPosition::MiddleBlocker->value],
+    ];
+    foreach (['generate', 'generateGreedy'] as $method) {
+        $plans = (new SubstitutionPlanGenerator)->{$method}($slots, MatchScenario::fromInput('25:20, 25:18, 25:22', 'Mecz'), $constraints);
+        expect($plans)->not->toBeEmpty();
+        foreach ($plans as $plan) {
+            expect($plan['slots'][0]['starter']['id'])->toBe(2)
+                ->and($plan['slots'][1]['starter']['id'])->toBe(1);
+        }
+    }
+});

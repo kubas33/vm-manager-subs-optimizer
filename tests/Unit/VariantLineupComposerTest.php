@@ -201,3 +201,19 @@ test('it identifies the player whose missing VM ID blocks sending', function () 
             'slot_key' => 'setter',
         ]);
 });
+
+test('manual starter overrides retain a bench conflict instead of replacing the choice', function () {
+    $base = baseVariantLineup();
+    $starter = collect($base['slots'])->firstWhere('key', 'middle_1')['player'];
+    $reserve = Player::factory()->forPosition(PlayerPosition::MiddleBlocker)->withVmPlayerId(901)->create();
+    $variant = (new VariantLineupComposer)->compose($base, variantPlan([[
+        'slot_number' => 1,
+        'position' => PlayerPosition::MiddleBlocker->value,
+        'starter' => variantPlayerPayload($starter),
+        'sets' => [['substitution_player' => variantPlayerPayload($reserve)]],
+    ]]), ['starter-middle_2' => $reserve->id]);
+
+    expect($variant['is_sendable'])->toBeFalse()
+        ->and($variant['lineup']['middle_2']['player']->id)->toBe($reserve->id)
+        ->and(collect($variant['send_blockers'])->pluck('code'))->toContain('starter_on_bench');
+});

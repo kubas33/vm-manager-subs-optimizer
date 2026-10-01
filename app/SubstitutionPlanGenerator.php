@@ -477,6 +477,12 @@ final class SubstitutionPlanGenerator
 
     private function startersSatisfyConstraints(array $starters, array $slots, array $constraints): bool
     {
+        foreach ($slots as $index => $slot) {
+            if (isset($slot['starter_id']) && $starters[$index]->id !== $slot['starter_id']) {
+                return false;
+            }
+        }
+
         foreach ($constraints as $constraint) {
             if ($constraint['kind'] === 'reserve_only' && in_array($constraint['player_id'], array_map(fn (Player $player): int => $player->id, $starters), true)) {
                 return false;
