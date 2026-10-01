@@ -10,6 +10,8 @@ final class VariantLineupComposer
     /**
      * @param  array<string, mixed>  $baseRecommendation
      * @param  array<string, mixed>  $plan
+     * @param  array<string, mixed>  $starterOverrides  Map of starter-{courtKey} to local player ID.
+     * @param  list<mixed>  $additionalBenchIds
      * @return array{
      *     lineup: array<string, array<string, mixed>>,
      *     bench: list<Player|null>,
@@ -19,7 +21,7 @@ final class VariantLineupComposer
      *     is_sendable: bool
      * }
      */
-    public function compose(array $baseRecommendation, array $plan): array
+    public function compose(array $baseRecommendation, array $plan, array $starterOverrides = [], array $additionalBenchIds = []): array
     {
         $sendBlockers = [];
         $lineup = $this->baseLineup($baseRecommendation);
@@ -27,7 +29,7 @@ final class VariantLineupComposer
             ->filter(fn (mixed $slot): bool => is_array($slot))
             ->sortBy(fn (array $slot): array => [(int) ($slot['slot_number'] ?? PHP_INT_MAX), (string) ($slot['position'] ?? '')])
             ->values();
-        $players = $this->availablePlayersForPlan($planSlots->all());
+        $players = $this->availablePlayersForPlan($planSlots->all(), [...$starterOverrides, ...$additionalBenchIds]);
 
         $planSlots
             ->groupBy(fn (array $slot): string => (string) ($slot['position'] ?? ''))
@@ -65,8 +67,10 @@ final class VariantLineupComposer
             ...$this->optimizedStarterPlayerIds($planSlots->all()),
             ...$this->requiredBenchPlayerIds($planSlots->all()),
         ]);
+        $this->applyStarterOverrides($lineup, $starterOverrides, $players, $sendBlockers);
         $starterPlayerIds = $this->validateLineup($lineup, $sendBlockers);
         $benchPlayers = $this->benchPlayers($planSlots->all(), $players, $starterPlayerIds, $sendBlockers);
+        $this->appendAdditionalBenchPlayers($benchPlayers, $additionalBenchIds, $players, $starterPlayerIds, $sendBlockers);
         $this->validateVmIds($lineup, $benchPlayers, $sendBlockers);
 
         $starterVmPlayerIds = collect(VmTacticsService::COURT_SLOT_KEYS)
@@ -93,6 +97,53 @@ final class VariantLineupComposer
             'send_blockers' => $sendBlockers,
             'is_sendable' => $sendBlockers === [],
         ];
+    }
+
+    /**
+     * @param  list<Player|null>  $benchPlayers
+     * @param  list<mixed>  $additionalBenchIds
+     * @param  array<int, Player>  $players
+     * @param  list<int>  $starterPlayerIds
+     * @param  list<array<string, int|string|null>>  $sendBlockers
+     */
+    private function appendAdditionalBenchPlayers(array &$benchPlayers, array $additionalBenchIds, array $players, array $starterPlayerIds, array &$sendBlockers): void
+    {
+        $requiredIds = collect($benchPlayers)->pluck('id')->all();
+        $seenAdditionalIds = [];
+        foreach ($additionalBenchIds as $value) {
+            if ($value === '' || $value === null) {
+                continue;
+            }
+
+            $playerId = $this->positiveId($value);
+            $player = $playerId === null ? null : ($players[$playerId] ?? null);
+            if (! $player instanceof Player) {
+                $this->addBlocker($sendBlockers, 'unavailable_player', 'Wybrany rezerwowy nie jest dostępny.', $playerId);
+
+                continue;
+            }
+            if (in_array($playerId, $starterPlayerIds, true)) {
+                $this->addBlocker($sendBlockers, 'starter_on_bench', "{$player->name} jest jednocześnie starterem i rezerwowym.", $playerId, $player->name);
+
+                continue;
+            }
+            if (in_array($playerId, $seenAdditionalIds, true)) {
+                $this->addBlocker($sendBlockers, 'duplicate_bench_player', "{$player->name} występuje więcej niż raz na ławce.", $playerId, $player->name);
+
+                continue;
+            }
+
+            $seenAdditionalIds[] = $playerId;
+            if (in_array($playerId, $requiredIds, true)) {
+                continue;
+            }
+
+            $benchPlayers[] = $player;
+        }
+
+        if (count($benchPlayers) > VmTacticsService::SQUAD_SIZE - VmTacticsService::STARTER_COUNT) {
+            $this->addBlocker($sendBlockers, 'bench_overflow', 'Wariant wymaga więcej niż pięciu zawodników na ławce.');
+        }
     }
 
     /**
@@ -124,7 +175,7 @@ final class VariantLineupComposer
      * @param  list<array<string, mixed>>  $planSlots
      * @return array<int, Player>
      */
-    private function availablePlayersForPlan(array $planSlots): array
+    private function availablePlayersForPlan(array $planSlots, array $starterOverrides = []): array
     {
         $ids = collect($planSlots)
             ->flatMap(function (array $slot): array {
@@ -141,7 +192,60 @@ final class VariantLineupComposer
             ->values()
             ->all();
 
-        return Player::query()->available()->whereKey($ids)->get()->keyBy('id')->all();
+        $overrideIds = collect($starterOverrides)
+            ->map(fn (mixed $value): ?int => $this->positiveId($value))
+            ->filter()
+            ->all();
+
+        return Player::query()->available()->whereKey([...$ids, ...$overrideIds])->get()->keyBy('id')->all();
+    }
+
+    /**
+     * @param  array<string, array<string, mixed>>  $lineup
+     * @param  array<string, mixed>  $starterOverrides
+     * @param  array<int, Player>  $players
+     * @param  list<array<string, int|string|null>>  $sendBlockers
+     */
+    private function applyStarterOverrides(array &$lineup, array $starterOverrides, array $players, array &$sendBlockers): void
+    {
+        foreach ($starterOverrides as $key => $value) {
+            if (! is_string($key) || ! str_starts_with($key, 'starter-')) {
+                $this->addBlocker($sendBlockers, 'invalid_starter_override', 'Ręczna korekta startera ma nieprawidłowy klucz.');
+
+                continue;
+            }
+
+            $slotKey = substr($key, strlen('starter-'));
+
+            if (! isset($lineup[$slotKey])) {
+                $this->addBlocker($sendBlockers, 'invalid_starter_override', 'Ręczna korekta wskazuje nieistniejące pole składu.', slotKey: $slotKey);
+
+                continue;
+            }
+
+            $playerId = $this->positiveId($value);
+            $player = $playerId === null ? null : ($players[$playerId] ?? null);
+
+            if (! $player instanceof Player) {
+                $this->addBlocker($sendBlockers, 'unavailable_player', 'Wybrany starter nie jest dostępny.', $playerId, slotKey: $slotKey);
+
+                continue;
+            }
+
+            $expectedPosition = $this->courtSlotPositions()[$slotKey] ?? null;
+
+            if ($expectedPosition !== $player->position->value) {
+                $this->addBlocker($sendBlockers, 'wrong_position', "{$player->name} nie może zająć tego pola składu.", $player->id, $player->name, $slotKey);
+
+                continue;
+            }
+
+            $lineup[$slotKey] = [
+                ...$lineup[$slotKey],
+                'player' => $player,
+                'source' => 'manual',
+            ];
+        }
     }
 
     /**
