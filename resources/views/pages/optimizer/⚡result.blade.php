@@ -165,6 +165,19 @@ new #[Title('Wynik optymalizacji')] class extends Component
         unset($this->manualPreview);
     }
 
+    public function resetManualPlan(): void
+    {
+        $base = collect($this->activeScenario['variants'] ?? [])->firstWhere('variant_key', $this->selectedVariantKey);
+        if (! $this->editingVariant || ! is_array($base)) {
+            return;
+        }
+
+        $this->manualAssignments = $this->initializeManualAssignments($base, []);
+        $this->manualOptimizationError = '';
+        $this->resetValidation('manual');
+        unset($this->manualPreview);
+    }
+
     public function saveManualVariant(): void
     {
         $preview = $this->manualPreview;
@@ -754,7 +767,7 @@ new #[Title('Wynik optymalizacji')] class extends Component
         @error('variant')<flux:callout icon="exclamation-triangle" color="red"><flux:callout.heading>Nie wysłano wariantu</flux:callout.heading><flux:callout.text>{{ $message }}</flux:callout.text></flux:callout>@enderror
         @if ($this->scenarioVariants === [])<flux:callout icon="users" color="amber"><flux:callout.heading>Brak legalnych wariantów</flux:callout.heading><flux:callout.text>Uzupełnij aktywnych zawodników i konfigurację.</flux:callout.text></flux:callout>@else
             <section class="rounded-3xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-700 dark:bg-zinc-900"><flux:text class="text-sm font-medium uppercase tracking-[0.18em] text-zinc-500">Scenariusze meczu</flux:text><div class="mt-4 flex flex-wrap gap-2">@foreach ($this->scenarioVariants as $scenario)<flux:button wire:key="scenario-{{ $scenario['scenario_key'] }}" size="sm" :variant="$scenario['scenario_key'] === $selectedScenarioKey ? 'primary' : 'ghost'" wire:click="selectScenario('{{ $scenario['scenario_key'] }}')">{{ $scenario['label'] }} · {{ count($scenario['variants']) }} warianty</flux:button>@endforeach</div></section>
-            @php($scenario = $this->activeScenario) @php($previousVariant = $this->activeVariant) @php($variant = $editingVariant ? $this->manualPreview : $previousVariant)
+            @php $scenario = $this->activeScenario; @endphp @php $previousVariant = $this->activeVariant; @endphp @php $variant = $editingVariant ? $this->manualPreview : $previousVariant; @endphp
             @if ($scenario && ! $variant)<flux:callout icon="exclamation-triangle" color="amber"><flux:callout.heading>Brak wariantów dla scenariusza</flux:callout.heading><flux:callout.text>Sprawdź dostępność zawodników, limity ławki i ograniczenia wejściowe.</flux:callout.text></flux:callout>@endif
             @if ($scenario && $variant)
                 <section class="rounded-3xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-700 dark:bg-zinc-900"><flux:heading size="lg">{{ $scenario['label'] }}</flux:heading><flux:text class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">{{ $scenario['input'] }} · {{ $scenario['sets_count'] }} sety</flux:text><div class="mt-5 grid gap-3 md:grid-cols-3">@foreach ($scenario['variants'] as $item)<button type="button" wire:key="variant-{{ $item['variant_key'] }}" wire:click="selectVariant('{{ $item['variant_key'] }}')" @class(['rounded-2xl border p-4 text-left', 'border-sky-500 bg-sky-50 dark:bg-sky-950/30' => $item['variant_key'] === $selectedVariantKey, 'border-zinc-200 bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-800' => $item['variant_key'] !== $selectedVariantKey])><div class="flex justify-between"><span class="font-semibold">#{{ $item['rank'] }}</span>@if ($item['rank'] === 1)<flux:badge color="emerald">Rekomendowany</flux:badge>@endif</div><div class="mt-3 text-xl font-semibold">+{{ $item['total_gained_training'] }} treningu</div><div class="mt-2 grid grid-cols-2 gap-1 text-xs text-zinc-600 dark:text-zinc-300"><span>min. {{ $item['lowest_final_training_bar'] }}%</span><span>{{ $item['players_below_fairness_threshold'] }} poniżej progu</span><span>{{ $item['wasted_actions'] }} stratnych akcji ({{ sprintf('%+d', $item['wasted_delta']) }})</span><span>{{ $item['substitutions_count'] }} zmian · {{ $item['substitution_rules_count'] ?? '—' }} reguł VM</span><span>{{ $item['players_at_limit'] }} osiąga limit</span><span>{{ sprintf('%+d', $item['gain_delta']) }} treningu do rekomendacji</span></div>@if ($item['rank'] > 1 && $item['gain_delta'] === 0 && $item['substitutions_count'] !== $scenario['variants'][0]['substitutions_count'])<p class="mt-2 text-xs text-emerald-700">Ten sam zysk; {{ $item['substitutions_count'] < $scenario['variants'][0]['substitutions_count'] ? 'ten wariant' : 'rekomendacja' }} wymaga mniej zmian.</p>@endif @if ($item['rank'] > 1)<p class="mt-3 text-xs text-zinc-600 dark:text-zinc-300">{{ $item['differences_from_recommendation'] }}</p>@endif</button>@endforeach</div>
@@ -762,23 +775,188 @@ new #[Title('Wynik optymalizacji')] class extends Component
                 </section>
                 <section class="rounded-3xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-700 dark:bg-zinc-900"><div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between"><div><flux:heading size="lg">Wariant #{{ $variant['rank'] }}{{ $editingVariant || ($variant['manual'] ?? false) ? ' · ręczny' : '' }}</flux:heading><flux:text class="mt-1 text-sm text-zinc-600 dark:text-zinc-300">Pełny skład, ławka i plan wybranego wariantu.</flux:text></div><div class="flex flex-wrap gap-2">@if ($editingVariant)<flux:button wire:click="cancelManualEdit">Anuluj edycję</flux:button><flux:button variant="primary" wire:click="saveManualVariant" :disabled="! $variant['is_sendable']">Zapisz ręczny plan</flux:button>@else<flux:button wire:click="startManualEdit">Edytuj wariant</flux:button><flux:button variant="primary" wire:click="requestApplyVariant" :disabled="! $variant['is_sendable']">Wyślij ten wariant do VM Managera</flux:button>@endif</div></div>
                     @if ($editingVariant)
-                        <div class="mt-4 rounded-2xl border border-sky-200 bg-sky-50 p-4 dark:border-sky-800 dark:bg-sky-950/30">
-                            <flux:heading size="sm">Ręczna korekta setów</flux:heading>
-                            <p class="mt-2 text-sm">{{ sprintf('%+d', $variant['total_gained_training'] - $previousVariant['total_gained_training']) }} treningu · {{ sprintf('%+d', $variant['wasted_actions'] - $previousVariant['wasted_actions']) }} stratnych akcji</p>
-                            <div class="mt-3 grid gap-3 md:grid-cols-2 lg:grid-cols-3">
-                                @foreach ($variant['plan']['slots'] as $slot)
-                                    @foreach ($slot['sets'] as $set)
-                                        <div wire:key="edit-{{ $slot['slot_number'] }}-{{ $set['set_number'] }}-{{ $set['active_player']['id'] }}">
-                                            <flux:select wire:change="$set('manualAssignments.{{ $slot['slot_number'] }}-{{ $set['set_number'] }}', $event.target.value)" label="Slot {{ $slot['slot_number'] }} · set {{ $set['set_number'] }}">
-                                                @foreach ($this->manualPlayerOptions($slot['position']) as $player)
-                                                    <option value="{{ $player->id }}" @selected($player->id === $set['active_player']['id'])>{{ $player->name }} · {{ $player->training_bar }}%</option>
-                                                @endforeach
-                                            </flux:select>
-                                        </div>
-                                    @endforeach
-                                @endforeach
+                        @php
+                            $manualChangesCount = collect($variant['plan']['slots'])->sum(function (array $slot) use ($previousVariant): int {
+                                $previousSlot = collect($previousVariant['plan']['slots'])->firstWhere('slot_number', $slot['slot_number']);
+
+                                if (! is_array($previousSlot)) {
+                                    return 0;
+                                }
+
+                                return collect($slot['sets'])->filter(function (array $set) use ($previousSlot): bool {
+                                    $previousSet = collect($previousSlot['sets'])->firstWhere('set_number', $set['set_number']);
+
+                                    return is_array($previousSet)
+                                        && (int) $set['active_player']['id'] !== (int) $previousSet['active_player']['id'];
+                                })->count();
+                            });
+                            $trainingDelta = $variant['total_gained_training'] - $previousVariant['total_gained_training'];
+                            $wastedDelta = $variant['wasted_actions'] - $previousVariant['wasted_actions'];
+                        @endphp
+
+                        <div class="mt-5 overflow-visible rounded-2xl border border-sky-300 bg-white dark:border-sky-800 dark:bg-zinc-900">
+                            <div class="flex items-center justify-between gap-4 border-b border-sky-100 px-5 py-4 dark:border-sky-900">
+                                <div>
+                                    <div class="flex flex-wrap items-center gap-2">
+                                        <flux:heading size="sm">Plan zmian · tryb edycji</flux:heading>
+                                        <flux:badge color="sky">Ręcznych korekt: {{ $manualChangesCount }}</flux:badge>
+                                    </div>
+                                    <flux:text class="mt-1 text-xs text-zinc-600 dark:text-zinc-300">
+                                        Wiersz oznacza slot, kolumna set. Kliknij zawodnika w komórce, aby zmienić plan dla konkretnego seta.
+                                    </flux:text>
+                                </div>
+
+                                <div class="flex shrink-0 gap-2 text-xs">
+                                    <flux:badge :color="$trainingDelta > 0 ? 'emerald' : ($trainingDelta < 0 ? 'amber' : 'zinc')">
+                                        Δ treningu {{ sprintf('%+d', $trainingDelta) }}
+                                    </flux:badge>
+                                    <flux:badge :color="$wastedDelta < 0 ? 'emerald' : ($wastedDelta > 0 ? 'amber' : 'zinc')">
+                                        Δ strat {{ sprintf('%+d', $wastedDelta) }}
+                                    </flux:badge>
+                                </div>
                             </div>
-                            @error('manual')<p class="mt-2 text-sm text-rose-700">{{ $message }}</p>@enderror
+
+                            <div class="overflow-visible">
+                                <table class="w-full table-fixed border-collapse text-left">
+                                    <thead>
+                                        <tr class="bg-zinc-50 text-xs uppercase tracking-wide text-zinc-500 dark:bg-zinc-800/70 dark:text-zinc-400">
+                                            <th class="w-56 border-b border-r border-zinc-200 px-4 py-3 font-medium dark:border-zinc-700">Slot / starter</th>
+                                            @for ($setNumber = 1; $setNumber <= $scenario['sets_count']; $setNumber++)
+                                                <th class="border-b border-zinc-200 px-3 py-3 text-center font-medium dark:border-zinc-700">Set {{ $setNumber }}</th>
+                                            @endfor
+                                        </tr>
+                                    </thead>
+                                    <tbody class="divide-y divide-zinc-200 dark:divide-zinc-700">
+                                        @foreach ($variant['plan']['slots'] as $slot)
+                                            @php
+                                                $previousSlot = collect($previousVariant['plan']['slots'])->firstWhere('slot_number', $slot['slot_number']);
+                                                $slotPlayers = collect($this->manualPlayerOptions($slot['position']));
+                                                $otherStarterIds = collect($variant['plan']['slots'])
+                                                    ->reject(fn (array $candidateSlot): bool => $candidateSlot['slot_number'] === $slot['slot_number'])
+                                                    ->pluck('starter.id')
+                                                    ->map(fn ($id): int => (int) $id)
+                                                    ->all();
+                                            @endphp
+
+                                            <tr wire:key="manual-row-{{ $slot['slot_number'] }}" class="align-top">
+                                                <th class="border-r border-zinc-200 bg-zinc-50/70 px-4 py-4 dark:border-zinc-700 dark:bg-zinc-800/40">
+                                                    <div class="flex items-start justify-between gap-3">
+                                                        <div class="min-w-0">
+                                                            <div class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                                                                Slot {{ $slot['slot_number'] }} · {{ $slot['position_label'] }}
+                                                            </div>
+                                                            <div class="mt-1 truncate text-xs text-zinc-600 dark:text-zinc-300">
+                                                                Starter: {{ $slot['starter']['name'] }} · {{ $slot['starter']['training_bar'] }}%
+                                                            </div>
+                                                        </div>
+                                                        <flux:badge color="zinc">{{ $slot['position_label'] }}</flux:badge>
+                                                    </div>
+                                                </th>
+
+                                                @foreach ($slot['sets'] as $set)
+                                                    @php
+                                                        $previousSet = is_array($previousSlot)
+                                                            ? collect($previousSlot['sets'])->firstWhere('set_number', $set['set_number'])
+                                                            : null;
+                                                        $isManualChange = is_array($previousSet)
+                                                            && (int) $set['active_player']['id'] !== (int) $previousSet['active_player']['id'];
+                                                        $otherActiveIds = collect($variant['plan']['slots'])
+                                                            ->reject(fn (array $candidateSlot): bool => $candidateSlot['slot_number'] === $slot['slot_number'])
+                                                            ->map(function (array $candidateSlot) use ($set): ?int {
+                                                                $candidateSet = collect($candidateSlot['sets'])->firstWhere('set_number', $set['set_number']);
+
+                                                                return is_array($candidateSet) ? (int) $candidateSet['active_player']['id'] : null;
+                                                            })
+                                                            ->filter()
+                                                            ->all();
+                                                        $assignmentKey = $slot['slot_number'].'-'.$set['set_number'];
+                                                    @endphp
+
+                                                    <td wire:key="manual-cell-{{ $slot['slot_number'] }}-{{ $set['set_number'] }}" @class([
+                                                        'p-2',
+                                                        'bg-sky-50/70 dark:bg-sky-950/20' => $isManualChange,
+                                                    ])>
+                                                        <flux:dropdown position="bottom" align="start">
+                                                            <button
+                                                                type="button"
+                                                                @class([
+                                                                    'group relative flex min-h-20 w-full flex-col justify-center rounded-xl border px-3 py-2.5 text-left transition hover:border-sky-400 hover:bg-sky-50 focus:outline-none focus:ring-2 focus:ring-sky-500/30 dark:hover:border-sky-600 dark:hover:bg-sky-950/30',
+                                                                    'border-sky-400 bg-sky-50 dark:border-sky-700 dark:bg-sky-950/30' => $isManualChange,
+                                                                    'border-zinc-200 bg-white dark:border-zinc-700 dark:bg-zinc-900' => ! $isManualChange,
+                                                                ])
+                                                            >
+                                                                <div class="flex items-center justify-between gap-2">
+                                                                    <span class="min-w-0 truncate text-sm font-medium text-zinc-900 dark:text-zinc-100">
+                                                                        {{ $set['substitution_player'] ? '→ ' : '' }}{{ $set['active_player']['name'] }}
+                                                                    </span>
+                                                                    <span class="shrink-0 text-xs font-medium text-zinc-500 dark:text-zinc-400">{{ $set['active_player']['training_bar'] }}%</span>
+                                                                </div>
+                                                                <div class="mt-1 flex items-center justify-between gap-2">
+                                                                    <span class="text-xs text-zinc-500 dark:text-zinc-400">
+                                                                        {{ $set['substitution_player'] ? 'zmiana od 1. punktu' : 'bez zmiany' }}
+                                                                    </span>
+                                                                    @if ($isManualChange)
+                                                                        <span class="rounded-full bg-sky-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-sky-700 dark:bg-sky-900/60 dark:text-sky-200">ręcznie</span>
+                                                                    @endif
+                                                                </div>
+                                                            </button>
+
+                                                            <flux:menu class="min-w-72">
+                                                                <div class="px-2 pb-2 pt-1 text-xs font-medium text-zinc-500 dark:text-zinc-400">
+                                                                    Set {{ $set['set_number'] }} · {{ $slot['position_label'] }}
+                                                                </div>
+
+                                                                @foreach ($slotPlayers as $player)
+                                                                    @php
+                                                                        $isActiveElsewhere = in_array($player->id, $otherActiveIds, true);
+                                                                        $isOtherStarter = in_array($player->id, $otherStarterIds, true);
+                                                                        $isUnavailable = $isActiveElsewhere || $isOtherStarter;
+                                                                        $isSelected = (int) $set['active_player']['id'] === (int) $player->id;
+                                                                    @endphp
+
+                                                                    <flux:menu.item
+                                                                        as="button"
+                                                                        type="button"
+                                                                        wire:key="manual-option-{{ $slot['slot_number'] }}-{{ $set['set_number'] }}-{{ $player->id }}"
+                                                                        wire:click="$set('manualAssignments.{{ $assignmentKey }}', {{ $player->id }})"
+                                                                        :disabled="$isUnavailable"
+                                                                    >
+                                                                        <div class="flex w-full items-center justify-between gap-4">
+                                                                            <span class="min-w-0 truncate">{{ $player->name }}</span>
+                                                                            <span class="shrink-0 text-xs text-zinc-500">{{ $player->training_bar }}%</span>
+                                                                        </div>
+
+                                                                        @if ($isSelected)
+                                                                            <div class="mt-0.5 text-[11px] text-sky-600 dark:text-sky-300">wybrany</div>
+                                                                        @elseif ($isActiveElsewhere)
+                                                                            <div class="mt-0.5 text-[11px] text-zinc-400">gra już w tym secie</div>
+                                                                        @elseif ($isOtherStarter)
+                                                                            <div class="mt-0.5 text-[11px] text-zinc-400">starter innego slotu</div>
+                                                                        @endif
+                                                                    </flux:menu.item>
+                                                                @endforeach
+                                                            </flux:menu>
+                                                        </flux:dropdown>
+                                                    </td>
+                                                @endforeach
+                                            </tr>
+                                        @endforeach
+                                    </tbody>
+                                </table>
+                            </div>
+
+                            <div class="flex items-center justify-between gap-4 border-t border-sky-100 px-5 py-3 dark:border-sky-900">
+                                <flux:text class="text-xs text-zinc-500 dark:text-zinc-400">
+                                    Pełny skład i ławka poniżej są przeliczane po każdej zmianie.
+                                </flux:text>
+                                <flux:button size="sm" variant="ghost" wire:click="resetManualPlan" :disabled="$manualChangesCount === 0">
+                                    Przywróć plan optymalizatora
+                                </flux:button>
+                            </div>
+
+                            @error('manual')
+                                <p class="border-t border-rose-200 px-5 py-3 text-sm text-rose-700 dark:border-rose-900 dark:text-rose-300">{{ $message }}</p>
+                            @enderror
                         </div>
                     @endif
                     <div class="mt-6 grid gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]"><div><flux:heading size="sm">Pełny skład</flux:heading><div class="mt-4 grid grid-cols-3 gap-3">@foreach ($variant['lineup'] as $slot)<div wire:key="lineup-{{ $variant['variant_key'] }}-{{ $slot['key'] }}" @class(['rounded-xl border p-3 text-center', 'border-zinc-200 bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-800' => $slot['player'], 'border-dashed border-amber-300 p-3 text-center' => ! $slot['player']]) style="grid-row: {{ $slot['grid_row'] ?? 'auto' }}; grid-column: {{ $slot['grid_column'] ?? 'auto' }};"><flux:text class="text-xs uppercase text-zinc-500">{{ $slot['abbreviation'] ?? $slot['key'] }}</flux:text>@if ($editingVariant)
@@ -807,7 +985,7 @@ new #[Title('Wynik optymalizacji')] class extends Component
                         @endif
                         <flux:text class="mt-4 text-sm">{{ count(collect($variant['bench'])->filter()) }} zajęte · {{ count(collect($variant['bench'])->filter(fn ($player) => $player === null)) }} wolne miejsca</flux:text></div></div>
                     @if ($variant['send_blockers'] !== [])<flux:callout class="mt-6" icon="exclamation-triangle" color="red"><flux:callout.heading>Wariant nie może zostać wysłany</flux:callout.heading><flux:callout.text><ul class="mt-2 list-disc pl-5">@foreach ($variant['send_blockers'] as $blocker)<li wire:key="blocker-{{ $variant['variant_key'] }}-{{ $loop->index }}">{{ $blocker['message'] }}</li>@endforeach</ul></flux:callout.text></flux:callout>@endif
-                    @php($diagnostics = $variant['training_diagnostics'])
+                    @php $diagnostics = $variant['training_diagnostics']; @endphp
                     <div class="mt-6 rounded-2xl bg-zinc-50 p-4 dark:bg-zinc-800">
                         <flux:heading size="sm">Wykorzystanie treningu</flux:heading>
                         @if (($variant['refinement_gained_training'] ?? 0) > 0)
@@ -820,12 +998,13 @@ new #[Title('Wynik optymalizacji')] class extends Component
                         </div>
                         <flux:text class="mt-2 text-xs">Dane dotyczą analizowanych pozycji. Minimum wynika z liczby akcji i limitów treningu zawodników. Dozwolone zmiany mogą uniemożliwić jego osiągnięcie.</flux:text>
                     </div>
+                    @if (! $editingVariant)
                     <div class="mt-6">
                         <flux:heading size="sm">Plan zmian</flux:heading>
-                        @php($sets = collect($variant['plan']['slots'])->flatMap(fn ($slot) => $slot['sets'])->groupBy('set_number')->sortKeys())
+                        @php $sets = collect($variant['plan']['slots'])->flatMap(fn ($slot) => $slot['sets'])->groupBy('set_number')->sortKeys(); @endphp
                         <div class="mt-3 grid gap-3 md:grid-cols-2">
                             @forelse ($sets as $number => $rules)
-                                @php($setResult = $diagnostics['sets'][$number])
+                                @php $setResult = $diagnostics['sets'][$number]; @endphp
                                 <div wire:key="set-{{ $variant['variant_key'] }}-{{ $number }}" class="rounded-2xl border border-zinc-200 p-4 dark:border-zinc-700">
                                     <div class="flex flex-wrap items-center justify-between gap-2">
                                         <flux:text class="font-medium">Set {{ $number }}</flux:text>
@@ -851,6 +1030,7 @@ new #[Title('Wynik optymalizacji')] class extends Component
                             @endforelse
                         </div>
                     </div>
+                    @endif
                     <div class="mt-6 overflow-x-auto">
                         <flux:heading size="sm">Efekt treningowy</flux:heading>
                         <table class="mt-3 min-w-full text-left text-sm">
@@ -861,7 +1041,7 @@ new #[Title('Wynik optymalizacji')] class extends Component
                             </thead>
                             <tbody>
                                 @foreach ($variant['player_results'] as $result)
-                                    @php($playerDiagnostics = $diagnostics['players'][$result['id']])
+                                    @php $playerDiagnostics = $diagnostics['players'][$result['id']]; @endphp
                                     <tr wire:key="result-{{ $variant['variant_key'] }}-{{ $result['id'] }}" class="border-b border-zinc-100 dark:border-zinc-800">
                                         <td class="p-2">
                                             {{ $result['name'] }}
@@ -886,6 +1066,6 @@ new #[Title('Wynik optymalizacji')] class extends Component
             @endif
         @endif
     @endif
-    <flux:modal wire:model="confirmingVariantApplication"><flux:heading size="lg">Wyślij wariant do VM Managera</flux:heading>@php($pending = $this->pendingVariant) @if ($pending)<flux:text class="mt-2">Wariant #{{ $pending['rank'] }} · {{ $this->tacticsMatchTypeOptions[$tacticsMatchType] ?? $tacticsMatchType }}</flux:text><ul class="mt-4 text-sm">@foreach ($pending['lineup'] as $slot)<li wire:key="pending-{{ $slot['key'] }}">{{ $slot['label'] ?? $slot['key'] }}: {{ $slot['player']?->name ?? 'Brak' }}</li>@endforeach</ul><flux:text class="mt-4">Ławka: {{ count(collect($pending['bench'])->filter()) }} · Reguły VM: {{ $pending['substitution_rules_count'] ?? 'nieprawidłowe' }} · Zdarzenia w setach: {{ $pending['substitutions_count'] }}</flux:text>@endif<div class="mt-6 flex justify-end gap-3"><flux:button variant="ghost" wire:click="cancelApplyVariant">Anuluj</flux:button><flux:button variant="primary" wire:click="confirmApplyVariant">Wyślij ten wariant do VM Managera</flux:button></div></flux:modal>
+    <flux:modal wire:model="confirmingVariantApplication"><flux:heading size="lg">Wyślij wariant do VM Managera</flux:heading>@php $pending = $this->pendingVariant; @endphp @if ($pending)<flux:text class="mt-2">Wariant #{{ $pending['rank'] }} · {{ $this->tacticsMatchTypeOptions[$tacticsMatchType] ?? $tacticsMatchType }}</flux:text><ul class="mt-4 text-sm">@foreach ($pending['lineup'] as $slot)<li wire:key="pending-{{ $slot['key'] }}">{{ $slot['label'] ?? $slot['key'] }}: {{ $slot['player']?->name ?? 'Brak' }}</li>@endforeach</ul><flux:text class="mt-4">Ławka: {{ count(collect($pending['bench'])->filter()) }} · Reguły VM: {{ $pending['substitution_rules_count'] ?? 'nieprawidłowe' }} · Zdarzenia w setach: {{ $pending['substitutions_count'] }}</flux:text>@endif<div class="mt-6 flex justify-end gap-3"><flux:button variant="ghost" wire:click="cancelApplyVariant">Anuluj</flux:button><flux:button variant="primary" wire:click="confirmApplyVariant">Wyślij ten wariant do VM Managera</flux:button></div></flux:modal>
     <flux:modal wire:model="confirmingChangesDeletion"><flux:heading size="lg">Usunąć wszystkie zmiany?</flux:heading><div class="mt-6 flex justify-end gap-3"><flux:button variant="ghost" wire:click="cancelDeleteAllChanges">Anuluj</flux:button><flux:button variant="danger" wire:click="deleteAllChanges">Usuń zmiany</flux:button></div></flux:modal>
 </div>

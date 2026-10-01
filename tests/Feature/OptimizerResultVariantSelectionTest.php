@@ -20,7 +20,13 @@ test('manual edit recalculates and rejects the same player in two slots', functi
         'scenarios' => [MatchScenario::fromInput('25:20, 25:18, 25:22', 'Mecz')->toArray()],
     ]);
 
-    $component = Livewire::test('pages::optimizer.result')->call('startManualEdit');
+    $component = Livewire::test('pages::optimizer.result')
+        ->call('startManualEdit')
+        ->assertSee('Plan zmian · tryb edycji')
+        ->assertSee('Slot / starter')
+        ->assertSee('Set 1')
+        ->assertSee('Przywróć plan optymalizatora');
+
     $plan = $component->get('activeVariant')['plan'];
     $component->set('manualAssignments.2-1', (string) $plan['slots'][0]['sets'][0]['active_player']['id']);
 

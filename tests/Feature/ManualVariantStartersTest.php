@@ -220,3 +220,17 @@ test('infeasible automatic changes block saving until the required reserve is se
     expect($component->get('manualPreview')['is_sendable'])->toBeTrue();
     $component->call('saveManualVariant')->assertHasNoErrors();
 });
+
+test('matrix reset restores the optimizer lineup bench and set assignments during editing', function () {
+    $component = manualStarterComponent();
+    $replacement = Player::factory()->forPosition(PlayerPosition::Setter)->withVmPlayerId(804)->create(['training_bar' => 100]);
+    $component->call('startManualEdit');
+    $original = $component->get('manualPreview');
+    $component->set('manualAssignments.starter-setter', (string) $replacement->id)
+        ->assertSee('Plan zmian · tryb edycji')
+        ->call('resetManualPlan')->assertHasNoErrors();
+    $reset = $component->get('manualPreview');
+    expect($reset['lineup']['setter']['player']->id)->toBe($original['lineup']['setter']['player']->id)
+        ->and($reset['plan'])->toBe($original['plan'])
+        ->and($reset['bench_vm_player_ids'])->toBe($original['bench_vm_player_ids']);
+});
