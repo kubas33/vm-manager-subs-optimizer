@@ -596,6 +596,8 @@ final class SubstitutionPlanGenerator
     }
 
     /**
+     * A swap between sets can be combined with reassignment of either set to cross a neutral-score plateau.
+     *
      * @param  array<int, array{slot_number: int, position: PlayerPosition, players: array<int, Player>}>  $slotDefinitions
      * @return iterable<array{slots: array}>
      */
@@ -632,10 +634,8 @@ final class SubstitutionPlanGenerator
 
                 for ($otherSet = $setIndex + 1; $otherSet < $setCount; $otherSet++) {
                     $alternative = $plan;
-
                     foreach ($slotIndices as $groupIndex => $slotIndex) {
                         $slot = $plan['slots'][$slotIndex];
-
                         foreach ([$setIndex => $otherSet, $otherSet => $setIndex] as $target => $source) {
                             $alternative['slots'][$slotIndex]['sets'][$target] = $this->buildSetEntry(
                                 $starters[$groupIndex], $players[$slot['sets'][$source]['active_player']['id']],
@@ -643,8 +643,38 @@ final class SubstitutionPlanGenerator
                             );
                         }
                     }
-
                     yield $alternative;
+
+                    foreach ($slotIndices as $groupIndex => $slotIndex) {
+                        $slot = $plan['slots'][$slotIndex];
+                        if ($slot['sets'][$setIndex]['active_player']['id'] === $slot['sets'][$otherSet]['active_player']['id']) {
+                            continue;
+                        }
+                        $swapped = $plan;
+                        foreach ([$setIndex => $otherSet, $otherSet => $setIndex] as $target => $source) {
+                            $swapped['slots'][$slotIndex]['sets'][$target] = $this->buildSetEntry(
+                                $starters[$groupIndex], $players[$slot['sets'][$source]['active_player']['id']],
+                                $target + 1, $slot['slot_number'], $slot['position_label'],
+                            );
+                        }
+                        foreach ([$setIndex => $otherSet, $otherSet => $setIndex] as $target => $untouched) {
+                            $untouchedIds = array_map(fn (int $index): int => $swapped['slots'][$index]['sets'][$untouched]['active_player']['id'], $slotIndices);
+                            if (count($untouchedIds) !== count(array_unique($untouchedIds))) {
+                                continue;
+                            }
+                            foreach ($assignments as $assignment) {
+                                $alternative = $swapped;
+                                foreach ($slotIndices as $assignmentIndex => $assignmentSlotIndex) {
+                                    $assignmentSlot = $plan['slots'][$assignmentSlotIndex];
+                                    $alternative['slots'][$assignmentSlotIndex]['sets'][$target] = $this->buildSetEntry(
+                                        $starters[$assignmentIndex], $assignment[$assignmentIndex], $target + 1,
+                                        $assignmentSlot['slot_number'], $assignmentSlot['position_label'],
+                                    );
+                                }
+                                yield $alternative;
+                            }
+                        }
+                    }
                 }
             }
         }

@@ -568,3 +568,30 @@ test('training optimizer refines greedy plans across sets and exposes matching d
         ->and($result['training_diagnostics']['minimum_wasted_actions'])->toBe(206)
         ->and($result['training_diagnostics']['excess_wasted_actions'])->toBe(9);
 });
+
+test('automatic middle blocker variants do not keep avoidable training losses in a hard four set match', function () {
+    $roster = [
+        ['Frank, Sławomir', 30], ['Wasyliszyn, Franciszek', 14], ['Barnes, Richard', 2],
+        ['Galeandro, Gelindo', 14], ['Kwiatek, Kacper', 8], ['Litwiński, Paweł', 33],
+        ['Rapčan, Ervín', 48], ['Kazanowski, Dariusz', 37], ['Paver, Eliáš', 7],
+        ['Lane, Elijah', 20], ['Cimirot, Lazar', 52],
+    ];
+    $players = collect($roster)->map(fn (array $data, int $index): Player => Player::factory()->make([
+        'id' => $index + 1, 'name' => $data[0], 'training_bar' => $data[1], 'position' => PlayerPosition::MiddleBlocker,
+    ]))->all();
+    $slots = collect([1, 2])->map(fn (int $number): array => [
+        'slot_number' => $number, 'position' => PlayerPosition::MiddleBlocker, 'reserve_limit' => 5, 'players' => $players,
+    ])->all();
+    $optimizer = new TrainingOptimizerService(new TrainingGainCalculator, new SubstitutionPlanGenerator);
+    $variants = $optimizer->optimize($slots, MatchScenario::fromInput('27:25, 23:25, 26:24, 25:23', 'Trudne 3:1'), 3);
+    expect(collect($variants)->pluck('total_gained_training')->all())->each->toBeGreaterThanOrEqual(348);
+    expect($variants[0]['total_gained_training'])->toBe(348)
+        ->and($variants[0]['wasted_actions'])->toBe(48);
+    foreach ($variants as $variant) {
+        $reserveIds = collect($variant['plan']['slots'])->flatMap(fn (array $slot): array => collect($slot['sets'])->pluck('substitution_player.id')->filter()->all())->unique();
+        expect($reserveIds->count())->toBeLessThanOrEqual(5);
+        foreach (range(0, 3) as $setIndex) {
+            expect(collect($variant['plan']['slots'])->pluck('sets.'.$setIndex.'.active_player.id')->unique())->toHaveCount(2);
+        }
+    }
+});
